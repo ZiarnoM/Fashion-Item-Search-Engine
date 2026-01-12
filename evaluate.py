@@ -189,10 +189,13 @@ def main(args):
     embeddings, labels = extract_embeddings(model, test_loader, device)
     
     # Split into query and gallery (use same set for simplicity)
-    query_embs = embeddings[:1000]
-    query_labels = labels[:1000]
-    gallery_embs = embeddings
-    gallery_labels = labels
+    # query_embs = embeddings[:1000]
+    # query_labels = labels[:1000]
+    # gallery_embs = embeddings
+    # gallery_labels = labels
+    split_idx = len(embeddings) // 2
+    query_embs, query_labels = embeddings[:split_idx], labels[:split_idx]
+    gallery_embs, gallery_labels = embeddings[split_idx:], labels[split_idx:]
     
     # Compute metrics
     print("\nComputing evaluation metrics...")
