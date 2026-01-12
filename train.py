@@ -257,7 +257,7 @@ def main(args):
     print(f"Trainable parameters: {trainable_params:,}")
 
     # Loss and optimizer
-    criterion = losses.TripletMarginLoss(margin=0.2)
+    criterion = losses.TripletMarginLoss(margin=0.5)
     miner = miners.MultiSimilarityMiner() if args.hard_mining else None
 
     optimizer = optim.Adam(model.parameters(), lr=args.lr)
