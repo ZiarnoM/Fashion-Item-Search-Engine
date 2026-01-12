@@ -14,6 +14,22 @@ from datetime import datetime
 from pytorch_metric_learning import losses, miners
 
 
+
+# Convert grayscale to RGB
+class RGBWrapper(torch.utils.data.Dataset):
+    def __init__(self, dataset):
+        self.dataset = dataset
+
+    def __len__(self):
+        return len(self.dataset)
+
+    def __getitem__(self, idx):
+        img, label = self.dataset[idx]
+        if img.shape[0] == 1:  # Grayscale
+            img = img.repeat(3, 1, 1)
+        return img, label
+
+
 class EmbeddingNet(nn.Module):
     """Embedding network with pre-trained backbone"""
 
@@ -79,22 +95,11 @@ def get_data_loaders(batch_size=64, data_aug=True):
         root='./data',
         train=True,
         download=True,
-        transform=train_transform
+        # transform=train_transform
+        transform=transforms.ToTensor()
     )
 
-    # Convert grayscale to RGB
-    class RGBWrapper(torch.utils.data.Dataset):
-        def __init__(self, dataset):
-            self.dataset = dataset
 
-        def __len__(self):
-            return len(self.dataset)
-
-        def __getitem__(self, idx):
-            img, label = self.dataset[idx]
-            if img.shape[0] == 1:  # Grayscale
-                img = img.repeat(3, 1, 1)
-            return img, label
 
     full_train = RGBWrapper(full_train)
 
@@ -110,6 +115,7 @@ def get_data_loaders(batch_size=64, data_aug=True):
         download=True,
         transform=test_transform
     )
+
     test_data = RGBWrapper(test_data)
 
     train_loader = DataLoader(train_data, batch_size=batch_size, shuffle=True, num_workers=2)

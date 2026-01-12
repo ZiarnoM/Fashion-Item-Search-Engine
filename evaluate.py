@@ -181,6 +181,7 @@ def main(args):
         transforms.Resize((224, 224)),
         transforms.ToTensor(),
     ]))
+
     testdata = RGBWrapper(testdata)  # Converts grayscale to fake RGB by repeating channels
     test_loader = DataLoader(testdata, batch_size=128, shuffle=False)
 
