@@ -13,7 +13,7 @@ class SearchEngine:
         self.device = device
         
         # Load model
-        checkpoint = torch.load(model_path, map_location=device)
+        checkpoint = torch.load(model_path, map_location=device,weights_only=False)
         model_args = checkpoint['args']
         
         self.model = EmbeddingNet(
