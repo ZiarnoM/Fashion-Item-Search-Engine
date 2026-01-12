@@ -141,13 +141,26 @@ def visualize_retrieval(model, test_loader, device, num_examples=5):
     print("✓ Saved retrieval visualization to results/retrieval_visualization.png")
     plt.close()
 
+
+# RGB wrapper
+class RGBWrapper(torch.utils.data.Dataset):
+    def __init__(self, dataset):
+        self.dataset = dataset
+    def __len__(self):
+        return len(self.dataset)
+    def __getitem__(self, idx):
+        img, label = self.dataset[idx]
+        if img.shape[0] == 1:
+            img = img.repeat(3, 1, 1)
+        return img, label
+
 def main(args):
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     print(f"Using device: {device}")
     
     # Load model
     print(f"Loading model from {args.model_path}...")
-    checkpoint = torch.load(args.model_path, map_location=device)
+    checkpoint = torch.load(args.model_path, map_location=device, weights_only=False)
     
     model_args = checkpoint['args']
     model = EmbeddingNet(
@@ -156,31 +169,21 @@ def main(args):
     ).to(device)
     model.load_state_dict(checkpoint['model_state_dict'])
     model.eval()
-    
-    # Prepare data
+
     transform = transforms.Compose([
         transforms.Resize((224, 224)),
         transforms.ToTensor(),
         transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])
     ])
-    
-    test_data = datasets.FashionMNIST(root='./data', train=False, download=True, transform=transform)
-    
-    # RGB wrapper
-    class RGBWrapper(torch.utils.data.Dataset):
-        def __init__(self, dataset):
-            self.dataset = dataset
-        def __len__(self):
-            return len(self.dataset)
-        def __getitem__(self, idx):
-            img, label = self.dataset[idx]
-            if img.shape[0] == 1:
-                img = img.repeat(3, 1, 1)
-            return img, label
-    
-    test_data = RGBWrapper(test_data)
-    test_loader = DataLoader(test_data, batch_size=128, shuffle=False)
-    
+
+    # In main(), before creating testloader
+    testdata = datasets.FashionMNIST(root='./data', train=False, download=True, transform=transforms.Compose([
+        transforms.Resize((224, 224)),
+        transforms.ToTensor(),
+    ]))
+    testdata = RGBWrapper(testdata)  # Converts grayscale to fake RGB by repeating channels
+    test_loader = DataLoader(testdata, batch_size=128, shuffle=False)
+
     # Extract embeddings
     print("\nExtracting embeddings from test set...")
     embeddings, labels = extract_embeddings(model, test_loader, device)
