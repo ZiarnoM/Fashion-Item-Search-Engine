@@ -14,20 +14,6 @@ from datetime import datetime
 from pytorch_metric_learning import losses, miners
 
 
-# Convert grayscale to RGB
-class RGBWrapper(torch.utils.data.Dataset):
-    def __init__(self, dataset):
-        self.dataset = dataset
-
-    def __len__(self):
-        return len(self.dataset)
-
-    def __getitem__(self, idx):
-        img, label = self.dataset[idx]
-        if img.shape[0] == 1:  # Grayscale
-            img = img.repeat(3, 1, 1)
-        return img, label
-
 class EmbeddingNet(nn.Module):
     """Embedding network with pre-trained backbone"""
 
@@ -62,10 +48,6 @@ class EmbeddingNet(nn.Module):
         return embeddings
 
 
-def convert_to_rgb(img):
-    """Convert a grayscale image to RGB."""
-    return img.convert("RGB")
-
 def get_data_loaders(batch_size=64, data_aug=True):
     """Prepare data loaders with augmentation"""
 
@@ -76,21 +58,18 @@ def get_data_loaders(batch_size=64, data_aug=True):
             transforms.RandomHorizontalFlip(),
             transforms.RandomRotation(10),
             transforms.ColorJitter(brightness=0.2, contrast=0.2),
-            transforms.Lambda(convert_to_rgb),  # Use the top-level function
             transforms.ToTensor(),
             transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])
         ])
     else:
         train_transform = transforms.Compose([
             transforms.Resize((224, 224)),
-            transforms.Lambda(convert_to_rgb),  # Use the top-level function
             transforms.ToTensor(),
             transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])
         ])
 
     test_transform = transforms.Compose([
         transforms.Resize((224, 224)),
-        transforms.Lambda(convert_to_rgb),  # Use the top-level function
         transforms.ToTensor(),
         transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])
     ])
@@ -103,7 +82,19 @@ def get_data_loaders(batch_size=64, data_aug=True):
         transform=train_transform
     )
 
+    # Convert grayscale to RGB
+    class RGBWrapper(torch.utils.data.Dataset):
+        def __init__(self, dataset):
+            self.dataset = dataset
 
+        def __len__(self):
+            return len(self.dataset)
+
+        def __getitem__(self, idx):
+            img, label = self.dataset[idx]
+            if img.shape[0] == 1:  # Grayscale
+                img = img.repeat(3, 1, 1)
+            return img, label
 
     full_train = RGBWrapper(full_train)
 
@@ -128,13 +119,17 @@ def get_data_loaders(batch_size=64, data_aug=True):
     return train_loader, val_loader, test_loader
 
 
-def train_epoch(model, loader, criterion, optimizer, device, miner=None):
-    """Train for one epoch"""
+def train_epoch(model, loader, criterion, optimizer, device, miner=None, epoch=0, writer=None):
+    """Train for one epoch with detailed logging"""
     model.train()
     total_loss = 0
+    batch_losses = []
+
+    # Track gradient norms
+    grad_norms = []
 
     pbar = tqdm(loader, desc='Training')
-    for images, labels in pbar:
+    for batch_idx, (images, labels) in enumerate(pbar):
         images, labels = images.to(device), labels.to(device)
 
         optimizer.zero_grad()
@@ -148,25 +143,76 @@ def train_epoch(model, loader, criterion, optimizer, device, miner=None):
             loss = criterion(embeddings, labels)
 
         loss.backward()
+
+        # Calculate gradient norm (for monitoring)
+        total_norm = 0
+        for p in model.parameters():
+            if p.grad is not None:
+                param_norm = p.grad.data.norm(2)
+                total_norm += param_norm.item() ** 2
+        total_norm = total_norm ** 0.5
+        grad_norms.append(total_norm)
+
         optimizer.step()
 
+        batch_losses.append(loss.item())
         total_loss += loss.item()
-        pbar.set_postfix({'loss': f'{loss.item():.4f}'})
 
-    return total_loss / len(loader)
+        # Log to tensorboard every 50 batches
+        if writer and batch_idx % 50 == 0:
+            global_step = epoch * len(loader) + batch_idx
+            writer.add_scalar('Batch/loss', loss.item(), global_step)
+            writer.add_scalar('Batch/grad_norm', total_norm, global_step)
+
+            # Log embedding statistics
+            emb_mean = embeddings.mean().item()
+            emb_std = embeddings.std().item()
+            writer.add_scalar('Embeddings/mean', emb_mean, global_step)
+            writer.add_scalar('Embeddings/std', emb_std, global_step)
+
+        pbar.set_postfix({
+            'loss': f'{loss.item():.4f}',
+            'grad_norm': f'{total_norm:.2f}'
+        })
+
+    avg_grad_norm = sum(grad_norms) / len(grad_norms)
+
+    return total_loss / len(loader), batch_losses, avg_grad_norm
 
 
 @torch.no_grad()
-def validate(model, loader, criterion, device):
-    """Validate model"""
+def validate(model, loader, criterion, device, epoch=0, writer=None):
+    """Validate model with detailed metrics"""
     model.eval()
     total_loss = 0
+
+    # Track embedding statistics
+    all_embeddings = []
+    all_labels = []
 
     for images, labels in tqdm(loader, desc='Validation'):
         images, labels = images.to(device), labels.to(device)
         embeddings = model(images)
         loss = criterion(embeddings, labels)
         total_loss += loss.item()
+
+        all_embeddings.append(embeddings.cpu())
+        all_labels.append(labels.cpu())
+
+    # Compute embedding statistics
+    all_embeddings = torch.cat(all_embeddings, dim=0)
+    emb_mean = all_embeddings.mean().item()
+    emb_std = all_embeddings.std().item()
+    emb_l2_norm = torch.norm(all_embeddings, p=2, dim=1).mean().item()
+
+    # Log to tensorboard
+    if writer:
+        writer.add_scalar('Validation/embedding_mean', emb_mean, epoch)
+        writer.add_scalar('Validation/embedding_std', emb_std, epoch)
+        writer.add_scalar('Validation/embedding_l2_norm', emb_l2_norm, epoch)
+
+        # Log embedding distribution
+        writer.add_histogram('Validation/embeddings', all_embeddings, epoch)
 
     return total_loss / len(loader)
 
@@ -215,26 +261,51 @@ def main(args):
     best_val_loss = float('inf')
     patience_counter = 0
 
+    # Store training history
+    history = {
+        'train_loss': [],
+        'val_loss': [],
+        'learning_rate': [],
+        'grad_norm': [],
+        'epoch': []
+    }
+
     print(f"\nStarting training for {args.epochs} epochs...")
     for epoch in range(args.epochs):
         print(f"\nEpoch {epoch + 1}/{args.epochs}")
 
         # Train
-        train_loss = train_epoch(model, train_loader, criterion, optimizer, device, miner)
+        train_loss, batch_losses, grad_norm = train_epoch(
+            model, train_loader, criterion, optimizer, device, miner,
+            epoch=epoch, writer=writer
+        )
 
         # Validate
-        val_loss = validate(model, val_loader, criterion, device)
+        val_loss = validate(model, val_loader, criterion, device, epoch=epoch, writer=writer)
 
         # Scheduler step
         scheduler.step(val_loss)
         current_lr = optimizer.param_groups[0]['lr']
 
+        # Store history
+        history['train_loss'].append(train_loss)
+        history['val_loss'].append(val_loss)
+        history['learning_rate'].append(current_lr)
+        history['grad_norm'].append(grad_norm)
+        history['epoch'].append(epoch)
+
         # Log to tensorboard
         writer.add_scalar('Loss/train', train_loss, epoch)
         writer.add_scalar('Loss/val', val_loss, epoch)
         writer.add_scalar('Learning_rate', current_lr, epoch)
+        writer.add_scalar('Training/grad_norm', grad_norm, epoch)
 
-        print(f"Train Loss: {train_loss:.4f}, Val Loss: {val_loss:.4f}, LR: {current_lr:.6f}")
+        # Log batch losses distribution
+        import numpy as np
+        writer.add_histogram('Training/batch_losses', np.array(batch_losses), epoch)
+
+        print(
+            f"Train Loss: {train_loss:.4f}, Val Loss: {val_loss:.4f}, LR: {current_lr:.6f}, Grad Norm: {grad_norm:.2f}")
 
         # Save best model
         if val_loss < best_val_loss:
@@ -246,7 +317,8 @@ def main(args):
                 'model_state_dict': model.state_dict(),
                 'optimizer_state_dict': optimizer.state_dict(),
                 'val_loss': val_loss,
-                'args': args
+                'args': args,
+                'history': history
             }, save_path)
             print(f"✓ Saved best model to {save_path}")
         else:
@@ -256,6 +328,13 @@ def main(args):
         if patience_counter >= args.patience:
             print(f"\nEarly stopping triggered after {epoch + 1} epochs")
             break
+
+    # Save training history as JSON
+    import json
+    history_path = f'results/{args.backbone}_history.json'
+    with open(history_path, 'w') as f:
+        json.dump(history, f, indent=2)
+    print(f"✓ Saved training history to {history_path}")
 
     writer.close()
     print(f"\n✓ Training completed! Best val loss: {best_val_loss:.4f}")
