@@ -13,9 +13,11 @@ from datetime import datetime
 # Triplet Loss
 from pytorch_metric_learning import losses, miners
 
+# Import Stanford dataset loader
+from stanford_products_loader import create_stanford_loaders
 
 
-# Convert grayscale to RGB
+# Convert grayscale to RGB (for Fashion-MNIST)
 class RGBWrapper(torch.utils.data.Dataset):
     def __init__(self, dataset):
         self.dataset = dataset
@@ -37,11 +39,13 @@ class EmbeddingNet(nn.Module):
         super().__init__()
 
         if backbone == 'resnet50':
-            base_model = torchvision.models.resnet50(pretrained=True)
+            # Use weights parameter instead of pretrained
+            base_model = torchvision.models.resnet50(weights='IMAGENET1K_V1')
             num_features = base_model.fc.in_features
             self.backbone = nn.Sequential(*list(base_model.children())[:-1])
         elif backbone == 'efficientnet':
-            base_model = torchvision.models.efficientnet_b0(pretrained=True)
+            # Use weights parameter instead of pretrained
+            base_model = torchvision.models.efficientnet_b0(weights='IMAGENET1K_V1')
             num_features = base_model.classifier[1].in_features
             self.backbone = nn.Sequential(*list(base_model.children())[:-1])
         else:
@@ -64,8 +68,26 @@ class EmbeddingNet(nn.Module):
         return embeddings
 
 
-def get_data_loaders(batch_size=64, data_aug=True):
-    """Prepare data loaders with augmentation"""
+def get_data_loaders(batch_size=128, data_aug=True, dataset='fashionmnist'):
+    """Prepare data loaders with augmentation
+
+    Args:
+        batch_size: Batch size for training
+        data_aug: Whether to use data augmentation
+        dataset: 'fashionmnist' or 'stanford'
+    """
+
+    if dataset == 'stanford':
+        # Use Stanford Online Products
+        print("Loading Stanford Online Products dataset...")
+        return create_stanford_loaders(
+            root_dir='./data/Stanford_Online_Products',
+            batch_size=batch_size,
+            num_workers=4
+        )
+
+    # Original Fashion-MNIST code
+    print("Loading Fashion-MNIST dataset...")
 
     # Data augmentation for training
     if data_aug:
@@ -95,11 +117,8 @@ def get_data_loaders(batch_size=64, data_aug=True):
         root='./data',
         train=True,
         download=True,
-        # transform=train_transform
-        transform=transforms.ToTensor()
+        transform=train_transform
     )
-
-
 
     full_train = RGBWrapper(full_train)
 
@@ -115,12 +134,11 @@ def get_data_loaders(batch_size=64, data_aug=True):
         download=True,
         transform=test_transform
     )
-
     test_data = RGBWrapper(test_data)
 
-    train_loader = DataLoader(train_data, batch_size=batch_size, shuffle=True, num_workers=2)
-    val_loader = DataLoader(val_data, batch_size=batch_size, shuffle=False, num_workers=2)
-    test_loader = DataLoader(test_data, batch_size=batch_size, shuffle=False, num_workers=2)
+    train_loader = DataLoader(train_data, batch_size=batch_size, shuffle=True, num_workers=2, pin_memory=True)
+    val_loader = DataLoader(val_data, batch_size=batch_size, shuffle=False, num_workers=2, pin_memory=True)
+    test_loader = DataLoader(test_data, batch_size=batch_size, shuffle=False, num_workers=2, pin_memory=True)
 
     return train_loader, val_loader, test_loader
 
@@ -181,7 +199,7 @@ def train_epoch(model, loader, criterion, optimizer, device, miner=None, epoch=0
             'grad_norm': f'{total_norm:.2f}'
         })
 
-    avg_grad_norm = sum(grad_norms) / len(grad_norms)
+    avg_grad_norm = sum(grad_norms) / len(grad_norms) if grad_norms else 0
 
     return total_loss / len(loader), batch_losses, avg_grad_norm
 
@@ -234,13 +252,14 @@ def main(args):
 
     # Tensorboard
     timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-    writer = SummaryWriter(f'runs/{args.backbone}_{timestamp}')
+    writer = SummaryWriter(f'runs/{args.dataset}_{args.backbone}_{timestamp}')
 
     # Data
     print("Loading data...")
     train_loader, val_loader, test_loader = get_data_loaders(
         batch_size=args.batch_size,
-        data_aug=args.augmentation
+        data_aug=args.augmentation,
+        dataset=args.dataset
     )
 
     # Model
@@ -261,7 +280,7 @@ def main(args):
     miner = miners.MultiSimilarityMiner() if args.hard_mining else None
 
     optimizer = optim.Adam(model.parameters(), lr=args.lr)
-    scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', patience=3)
+    scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', patience=3, factor=0.5)
 
     # Training loop
     best_val_loss = float('inf')
@@ -317,13 +336,19 @@ def main(args):
         if val_loss < best_val_loss:
             best_val_loss = val_loss
             patience_counter = 0
-            save_path = f'models/{args.backbone}_best.pth'
+            save_path = f'models/{args.dataset}_{args.backbone}_best.pth'
             torch.save({
                 'epoch': epoch,
                 'model_state_dict': model.state_dict(),
                 'optimizer_state_dict': optimizer.state_dict(),
                 'val_loss': val_loss,
-                'args': args,
+                'args': {
+                    'backbone': args.backbone,
+                    'embedding_size': args.embedding_size,
+                    'batch_size': args.batch_size,
+                    'lr': args.lr,
+                    'dataset': args.dataset
+                },
                 'history': history
             }, save_path)
             print(f"✓ Saved best model to {save_path}")
@@ -337,7 +362,7 @@ def main(args):
 
     # Save training history as JSON
     import json
-    history_path = f'results/{args.backbone}_history.json'
+    history_path = f'results/{args.dataset}_{args.backbone}_history.json'
     with open(history_path, 'w') as f:
         json.dump(history, f, indent=2)
     print(f"✓ Saved training history to {history_path}")
@@ -351,12 +376,15 @@ if __name__ == '__main__':
     parser.add_argument('--backbone', type=str, default='resnet50',
                         choices=['resnet50', 'efficientnet'])
     parser.add_argument('--embedding_size', type=int, default=128)
-    parser.add_argument('--batch_size', type=int, default=64)
-    parser.add_argument('--epochs', type=int, default=15)
-    parser.add_argument('--lr', type=float, default=0.001)
+    parser.add_argument('--batch_size', type=int, default=128)
+    parser.add_argument('--epochs', type=int, default=20)
+    parser.add_argument('--lr', type=float, default=0.0005)
     parser.add_argument('--patience', type=int, default=5)
     parser.add_argument('--augmentation', action='store_true', default=True)
     parser.add_argument('--hard_mining', action='store_true', default=True)
+    parser.add_argument('--dataset', type=str, default='stanford',
+                        choices=['fashionmnist', 'stanford'],
+                        help='Dataset to use: fashionmnist or stanford')
 
     args = parser.parse_args()
     main(args)
