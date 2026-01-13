@@ -354,7 +354,8 @@ if __name__ == '__main__':
     
     # Check which models have history files
     available_models = []
-    for model in ['resnet50', 'efficientnet']:
+    # for model in ['resnet50', 'efficientnet']:
+    for model in ['stanford_resnet50' ]:
         if Path(f'results/{model}_history.json').exists():
             available_models.append(model)
     

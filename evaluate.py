@@ -30,7 +30,7 @@ def extract_embeddings(model, loader, device, return_product_ids=False):
     for images, labels in tqdm(loader, desc='Extracting embeddings'):
         images = images.to(device)
         embeddings = model(images)
-        all_embeddings.append(embeddings.cpu().numpy())
+        all_embeddings.append(embeddings.detach().cpu().numpy())
         all_labels.append(labels.numpy())
 
         # Get product IDs if requested (from dataset's original labels)
@@ -158,58 +158,95 @@ def mean_average_precision_exclude_same(query_embs, query_labels, query_ids,
     return np.mean(aps)
 
 
-def visualize_retrieval(model, test_loader, device, num_examples=5, dataset_type='fashionmnist'):
-    """Visualize retrieval results"""
+def visualize_retrieval(model, test_loader, device, num_examples=5, dataset_type="fashionmnist",
+                        query_embs=None, query_labels=None, gallery_embs=None, gallery_labels=None,
+                        query_images=None):
+    """
+    Visualize retrieval results.
+    If precomputed embeddings/labels provided, use them (for mode 2).
+    Otherwise, compute on-the-fly from test_loader (for product-level).
+    """
     model.eval()
 
-    # Get some test data
-    test_images, test_labels = next(iter(test_loader))
+    # If no precomputed data, compute embeddings from test batch
+    if query_embs is None or gallery_embs is None:
+        test_images, test_labels = next(iter(test_loader))
+        with torch.no_grad():
+            test_images_gpu = test_images.to(device)
+            embeddings = model(test_images_gpu).cpu().numpy()
+        query_embs = embeddings
+        gallery_embs = embeddings
+        query_labels = test_labels
+        gallery_labels = test_labels
+        query_images = test_images
+    else:
+        test_images = query_images
+        test_labels = query_labels
 
-    # Extract embeddings
-    with torch.no_grad():
-        test_images_gpu = test_images.to(device)
-        embeddings = model(test_images_gpu).cpu().numpy()
+    # For mode 2 category-level: pick diverse categories
+    all_labels = query_labels.numpy()
+    unique_labels = np.unique(all_labels)
+    chosen_labels = np.random.choice(unique_labels,
+                                     size=min(num_examples, len(unique_labels)),
+                                     replace=False)
 
-    fig, axes = plt.subplots(num_examples, 6, figsize=(15, num_examples * 2.5))
+    fig, axes = plt.subplots(len(chosen_labels), 6, figsize=(15, len(chosen_labels) * 2.5))
+    if len(chosen_labels) == 1:
+        axes = np.expand_dims(axes, 0)
 
-    for i in range(num_examples):
-        query_idx = i
-        query_emb = embeddings[query_idx]
-        query_label = test_labels[query_idx].item()
+    for i, cat in enumerate(chosen_labels):
+        # Pick one random query from this category
+        candidate_indices = np.where(all_labels == cat)[0]
+        query_idx = np.random.choice(candidate_indices)
+        query_emb = query_embs[query_idx]
+        query_label = int(query_labels[query_idx].item())
 
         # Compute similarities
-        sims = compute_similarity(query_emb, embeddings)
-        top_5_indices = np.argsort(sims)[::-1][1:6]  # Exclude self
+        sims = compute_similarity(query_emb, gallery_embs)
 
-        # Denormalize for visualization
-        def denorm(img):
+        # Exclude same product if product IDs available (mode 2)
+        exclude_same = False
+        if 'queryproductids' in locals() and 'galleryproductids' in locals():
+            q_id = queryproductids[query_idx]
+            valid_mask = galleryproductids != q_id
+            exclude_same = True
+        else:
+            valid_mask = np.ones_like(sims, dtype=bool)
+
+        sorted_indices = np.argsort(sims[valid_mask])[::-1]
+        gallery_indices = np.where(valid_mask)[0][sorted_indices[:5]]  # top 5
+
+        # Denormalize function
+        def denorm_img(img):
             img = img * torch.tensor([0.229, 0.224, 0.225]).view(3, 1, 1)
             img = img + torch.tensor([0.485, 0.456, 0.406]).view(3, 1, 1)
             return torch.clamp(img, 0, 1)
 
         # Plot query
-        ax = axes[i, 0] if num_examples > 1 else axes[0]
-        query_img = denorm(test_images[query_idx]).permute(1, 2, 0).numpy()
+        ax = axes[i, 0]
+        query_img = denorm_img(test_images[query_idx]).permute(1, 2, 0).numpy()
         ax.imshow(query_img)
-        ax.set_title(f'Query\nClass: {query_label}', fontsize=10)
-        ax.axis('off')
+        ax.set_title(f"Query cat {query_label}", fontsize=10)
+        ax.axis("off")
 
-        # Plot top-5 results
-        for j, idx in enumerate(top_5_indices):
-            ax = axes[i, j + 1] if num_examples > 1 else axes[j + 1]
-            result_img = denorm(test_images[idx]).permute(1, 2, 0).numpy()
-            result_label = test_labels[idx].item()
-            similarity = sims[idx]
-
-            color = 'green' if result_label == query_label else 'red'
+        # Plot top 5 results
+        for j, idx in enumerate(gallery_indices):
+            ax = axes[i, j + 1]
+            result_label = int(gallery_labels[idx].item())
+            result_img = denorm_img(test_images[idx]).permute(1, 2, 0).numpy()
+            color = "green" if result_label == query_label else "red"
+            sim_val = sims[idx]
             ax.imshow(result_img)
-            ax.set_title(f'Sim: {similarity:.3f}\nClass: {result_label}',
-                         fontsize=9, color=color)
-            ax.axis('off')
+            ax.set_title(f"{sim_val:.3f}\ncat {result_label}", fontsize=9, color=color)
+            ax.axis("off")
 
     plt.tight_layout()
-    plt.savefig('results/retrieval_visualization.png', dpi=150, bbox_inches='tight')
-    print("✓ Saved retrieval visualization to results/retrieval_visualization.png")
+
+    # Save with mode indicator
+    mode_str = "_mode2_categories" if exclude_same else "_product_level"
+    save_path = f"results/retrieval_visualization{mode_str}.png"
+    plt.savefig(save_path, dpi=150, bbox_inches="tight")
+    print(f"Saved retrieval visualization to {save_path}")
     plt.close()
 
 
@@ -318,7 +355,7 @@ def extract_embeddings_with_metadata(model, loader, device):
     for images, labels in tqdm(loader, desc='Extracting embeddings with metadata'):
         images = images.to(device)
         embeddings = model(images)
-        all_embeddings.append(embeddings.cpu().numpy())
+        all_embeddings.append(embeddings.detach().cpu().numpy())
 
         batch_size = len(labels)
         all_product_ids.extend(product_ids_list[idx:idx + batch_size])
@@ -403,26 +440,26 @@ def main(args):
         print(f"Query set: {len(query_embs)} samples")
         print(f"Gallery set: {len(gallery_embs)} samples")
 
-    # Compute metrics
-    print("\n" + "=" * 60)
-    print("EVALUATION MODE 1: PRODUCT-LEVEL RETRIEVAL")
-    print("(Finding same product - metric learning evaluation)")
-    print("=" * 60)
-
-    # Product-level Recall@K (same as before)
-    product_recall_scores = recall_at_k(
-        query_embs, query_product_ids, gallery_embs, gallery_product_ids,
-        k_values=[1, 5, 10, 20, 50]
-    )
-
-    for k, score in product_recall_scores.items():
-        print(f"Product Recall@{k:>2}: {score:.4f} ({score * 100:.2f}%)")
-
-    # Product-level MAP@K
-    product_map_score = mean_average_precision(
-        query_embs, query_product_ids, gallery_embs, gallery_product_ids, k=10
-    )
-    print(f"Product MAP@10: {product_map_score:.4f} ({product_map_score * 100:.2f}%)")
+    # # Compute metrics
+    # print("\n" + "=" * 60)
+    # print("EVALUATION MODE 1: PRODUCT-LEVEL RETRIEVAL")
+    # print("(Finding same product - metric learning evaluation)")
+    # print("=" * 60)
+    #
+    # # Product-level Recall@K (same as before)
+    # product_recall_scores = recall_at_k(
+    #     query_embs, query_product_ids, gallery_embs, gallery_product_ids,
+    #     k_values=[1, 5, 10, 20, 50]
+    # )
+    #
+    # for k, score in product_recall_scores.items():
+    #     print(f"Product Recall@{k:>2}: {score:.4f} ({score * 100:.2f}%)")
+    #
+    # # Product-level MAP@K
+    # product_map_score = mean_average_precision(
+    #     query_embs, query_product_ids, gallery_embs, gallery_product_ids, k=10
+    # )
+    # print(f"Product MAP@10: {product_map_score:.4f} ({product_map_score * 100:.2f}%)")
 
     # NEW: Category-level retrieval (for search engine)
     print("\n" + "=" * 60)
@@ -468,15 +505,15 @@ def main(args):
         'num_unique_products': len(np.unique(product_ids)),
         'num_categories': len(np.unique(categories)),
 
-        # Product-level metrics (metric learning evaluation)
-        'product_metrics': {
-            'recall@1': float(product_recall_scores[1]),
-            'recall@5': float(product_recall_scores[5]),
-            'recall@10': float(product_recall_scores[10]),
-            'recall@20': float(product_recall_scores[20]),
-            'recall@50': float(product_recall_scores[50]),
-            'map@10': float(product_map_score),
-        },
+        # # Product-level metrics (metric learning evaluation)
+        # 'product_metrics': {
+        #     'recall@1': float(product_recall_scores[1]),
+        #     'recall@5': float(product_recall_scores[5]),
+        #     'recall@10': float(product_recall_scores[10]),
+        #     'recall@20': float(product_recall_scores[20]),
+        #     'recall@50': float(product_recall_scores[50]),
+        #     'map@10': float(product_map_score),
+        # },
 
         # Category-level metrics (search engine evaluation - excludes same product)
         'category_metrics': {
@@ -503,7 +540,22 @@ def main(args):
 
     # Visualize retrievals
     print("\nGenerating retrieval visualizations...")
-    visualize_retrieval(model, test_loader, device, num_examples=5, dataset_type=dataset_type)
+    # print("Printing retrieval visualizations (product-level)...")
+    # visualize_retrieval(model, test_loader, device, num_examples=5, dataset_type=dataset_type)
+
+    print("Printing retrieval visualizations (mode 2 - category-level, diverse categories)...")
+    visualize_retrieval(
+        model,
+        test_loader,
+        device,
+        num_examples=10,
+        dataset_type=dataset_type,
+        query_embs=query_embs,
+        query_labels=query_categories,
+        gallery_embs=gallery_embs,
+        gallery_labels=gallery_categories,
+        query_images=None,  # if you want real images here, pass a batch & adjust code above accordingly
+    )
 
     print("\n" + "=" * 60)
     print("✓ EVALUATION COMPLETED!")
