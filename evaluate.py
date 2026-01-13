@@ -180,7 +180,11 @@ def visualize_retrieval(model, test_loader, device, num_examples=5, dataset_type
         gallery_labels = test_labels
         query_images = test_images
     else:
-        test_images = query_images
+        if query_images is None:
+            # Fallback: get batch if no images provided
+            test_images, _ = next(iter(test_loader))
+        else:
+            test_images = query_images
         test_labels = query_labels
 
     # For mode 2 category-level: pick diverse categories
@@ -543,18 +547,15 @@ def main(args):
     # print("Printing retrieval visualizations (product-level)...")
     # visualize_retrieval(model, test_loader, device, num_examples=5, dataset_type=dataset_type)
 
+    # Get a test batch for images (same as product-level uses)
+    test_images, _ = next(iter(test_loader))
+
     print("Printing retrieval visualizations (mode 2 - category-level, diverse categories)...")
     visualize_retrieval(
-        model,
-        test_loader,
-        device,
-        num_examples=10,
-        dataset_type=dataset_type,
-        query_embs=query_embs,
-        query_labels=query_categories,
-        gallery_embs=gallery_embs,
-        gallery_labels=gallery_categories,
-        query_images=None,  # if you want real images here, pass a batch & adjust code above accordingly
+        model, test_loader, device, num_examples=10, dataset_type=dataset_type,
+        query_embs=query_embs, query_labels=query_categories,
+        gallery_embs=gallery_embs, gallery_labels=gallery_categories,
+        query_images=test_images  # Pass images for visualization
     )
 
     print("\n" + "=" * 60)
