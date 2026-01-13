@@ -126,24 +126,28 @@ class StanfordProductsDataset(Dataset):
             # Store both splits
             self._all_image_paths = self.image_paths.copy()
             self._all_labels = self.labels.copy()
+            self._all_super_labels = self.super_labels.copy()  # Store categories
             self.train_indices = train_indices
             self.val_indices = val_indices
 
             print(f"Split into {len(train_classes)} train classes and {len(val_classes)} val classes")
             print(f"Train samples: {len(train_indices)}, Val samples: {len(val_indices)}")
-            
+
             # Use train indices by default
             self.image_paths = [self._all_image_paths[i] for i in train_indices]
             self.labels = [self._all_labels[i] for i in train_indices]
-    
+            self.super_labels = [self._all_super_labels[i] for i in train_indices]
+
     def set_split(self, split_type):
         """Switch between train/val for training split"""
         if split_type == 'train' and hasattr(self, 'train_indices'):
             self.image_paths = [self._all_image_paths[i] for i in self.train_indices]
             self.labels = [self._all_labels[i] for i in self.train_indices]
+            self.super_labels = [self._all_super_labels[i] for i in self.train_indices]
         elif split_type == 'val' and hasattr(self, 'val_indices'):
             self.image_paths = [self._all_image_paths[i] for i in self.val_indices]
             self.labels = [self._all_labels[i] for i in self.val_indices]
+            self.super_labels = [self._all_super_labels[i] for i in self.val_indices]
     
     def __len__(self):
         return len(self.image_paths)

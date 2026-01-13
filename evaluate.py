@@ -16,11 +16,16 @@ from stanford_products_loader import StanfordProductsDataset
 
 
 @torch.no_grad()
-def extract_embeddings(model, loader, device):
-    """Extract embeddings for all images"""
+def extract_embeddings(model, loader, device, return_product_ids=False):
+    """Extract embeddings for all images
+
+    Args:
+        return_product_ids: If True, also return the original product IDs from dataset
+    """
     model.eval()
     all_embeddings = []
     all_labels = []
+    all_product_ids = []
 
     for images, labels in tqdm(loader, desc='Extracting embeddings'):
         images = images.to(device)
@@ -28,8 +33,18 @@ def extract_embeddings(model, loader, device):
         all_embeddings.append(embeddings.cpu().numpy())
         all_labels.append(labels.numpy())
 
+        # Get product IDs if requested (from dataset's original labels)
+        if return_product_ids and hasattr(loader.dataset, 'original_product_ids'):
+            batch_product_ids = [loader.dataset.original_product_ids[loader.dataset.labels[idx]]
+                                 for idx in range(len(labels))]
+            all_product_ids.append(np.array(batch_product_ids))
+
     embeddings = np.vstack(all_embeddings)
     labels = np.concatenate(all_labels)
+
+    if return_product_ids and all_product_ids:
+        product_ids = np.concatenate(all_product_ids)
+        return embeddings, labels, product_ids
 
     return embeddings, labels
 
@@ -41,20 +56,34 @@ def compute_similarity(query_emb, gallery_embs):
     return similarities
 
 
-def recall_at_k(query_embs, query_labels, gallery_embs, gallery_labels, k_values=[1, 5, 10, 20]):
-    """Compute Recall@K metric"""
+def recall_at_k(query_embs, query_labels, gallery_embs, gallery_labels, k_values=[1, 5, 10, 20],
+                exclude_same=False, query_ids=None, gallery_ids=None):
+    """Compute Recall@K metric
+
+    Args:
+        exclude_same: If True, exclude exact same product matches (for search engine evaluation)
+        query_ids: Product IDs for query set (to exclude same product)
+        gallery_ids: Product IDs for gallery set (to exclude same product)
+    """
     recalls = {k: [] for k in k_values}
 
     for i, (query_emb, query_label) in enumerate(zip(query_embs, query_labels)):
         # Compute similarities
         sims = compute_similarity(query_emb, gallery_embs)
 
-        # Get top-k indices (excluding self if query is in gallery)
-        top_k_indices = np.argsort(sims)[::-1]
+        # Get sorted indices
+        sorted_indices = np.argsort(sims)[::-1]
+
+        # If excluding same product, filter out matches with same product ID
+        if exclude_same and query_ids is not None and gallery_ids is not None:
+            query_product_id = query_ids[i]
+            # Keep only results that are different products
+            valid_mask = gallery_ids[sorted_indices] != query_product_id
+            sorted_indices = sorted_indices[valid_mask]
 
         # Check recalls
         for k in k_values:
-            top_k_labels = gallery_labels[top_k_indices[:k]]
+            top_k_labels = gallery_labels[sorted_indices[:k]]
             recalls[k].append(int(query_label in top_k_labels))
 
     # Average recalls
@@ -72,6 +101,42 @@ def mean_average_precision(query_embs, query_labels, gallery_embs, gallery_label
 
         # Sort by similarity
         sorted_indices = np.argsort(sims)[::-1][:k]
+        sorted_labels = gallery_labels[sorted_indices]
+
+        # Compute average precision
+        relevant = (sorted_labels == query_label).astype(int)
+        if relevant.sum() == 0:
+            aps.append(0.0)
+            continue
+
+        precision_at_k = []
+        num_relevant = 0
+        for i, rel in enumerate(relevant):
+            if rel:
+                num_relevant += 1
+                precision_at_k.append(num_relevant / (i + 1))
+
+        ap = np.mean(precision_at_k) if precision_at_k else 0.0
+        aps.append(ap)
+
+    return np.mean(aps)
+
+
+def mean_average_precision_exclude_same(query_embs, query_labels, query_ids,
+                                        gallery_embs, gallery_labels, gallery_ids, k=10):
+    """Compute Mean Average Precision@K excluding same product matches"""
+    aps = []
+
+    for query_emb, query_label, query_id in zip(query_embs, query_labels, query_ids):
+        # Compute similarities
+        sims = compute_similarity(query_emb, gallery_embs)
+
+        # Sort by similarity
+        sorted_indices = np.argsort(sims)[::-1]
+
+        # Exclude same product
+        valid_mask = gallery_ids[sorted_indices] != query_id
+        sorted_indices = sorted_indices[valid_mask][:k]
         sorted_labels = gallery_labels[sorted_indices]
 
         # Compute average precision
@@ -163,8 +228,12 @@ class RGBWrapper(torch.utils.data.Dataset):
         return img, label
 
 
-def load_test_data(dataset_type='fashionmnist', batch_size=128):
-    """Load test dataset"""
+def load_test_data(dataset_type='fashionmnist', batch_size=128, return_categories=False):
+    """Load test dataset
+
+    Args:
+        return_categories: If True, return a dataset that tracks both products and categories
+    """
 
     if dataset_type == 'stanford':
         print("Loading Stanford Online Products test set...")
@@ -202,7 +271,7 @@ def load_test_data(dataset_type='fashionmnist', batch_size=128):
         ])
 
         testdata = datasets.FashionMNIST(
-            root='./data',
+            root_dir='./data',
             train=False,
             download=True,
             transform=transform
@@ -217,6 +286,53 @@ def load_test_data(dataset_type='fashionmnist', batch_size=128):
         )
 
         return test_loader
+
+
+def extract_embeddings_with_metadata(model, loader, device):
+    """Extract embeddings along with product IDs and categories"""
+    model.eval()
+    all_embeddings = []
+    all_product_ids = []  # Mapped product IDs (0 to N)
+    all_categories = []  # Categories
+
+    dataset = loader.dataset
+    has_categories = hasattr(dataset, 'super_labels')
+
+    # Build index mapping for the current dataset split
+    if hasattr(dataset, '_all_image_paths'):
+        # This is a training dataset split (train or val)
+        product_ids_list = []
+        categories_list = []
+        for img_path in dataset.image_paths:
+            idx = dataset._all_image_paths.index(img_path)
+            product_ids_list.append(dataset._all_labels[idx])
+            if has_categories:
+                categories_list.append(dataset._all_super_labels[idx] if hasattr(dataset, '_all_super_labels')
+                                       else dataset.super_labels[idx])
+    else:
+        # Regular dataset
+        product_ids_list = dataset.labels
+        categories_list = dataset.super_labels if has_categories else dataset.labels
+
+    idx = 0
+    for images, labels in tqdm(loader, desc='Extracting embeddings with metadata'):
+        images = images.to(device)
+        embeddings = model(images)
+        all_embeddings.append(embeddings.cpu().numpy())
+
+        batch_size = len(labels)
+        all_product_ids.extend(product_ids_list[idx:idx + batch_size])
+        if has_categories:
+            all_categories.extend(categories_list[idx:idx + batch_size])
+        else:
+            all_categories.extend(labels.numpy())
+        idx += batch_size
+
+    embeddings = np.vstack(all_embeddings)
+    product_ids = np.array(all_product_ids)
+    categories = np.array(all_categories)
+
+    return embeddings, product_ids, categories
 
 
 def main(args):
@@ -257,51 +373,81 @@ def main(args):
     # Load test data
     test_loader = load_test_data(dataset_type=dataset_type, batch_size=args.batch_size)
 
-    # Extract embeddings
+    # Extract embeddings with metadata
     print("\nExtracting embeddings from test set...")
-    embeddings, labels = extract_embeddings(model, test_loader, device)
+    embeddings, product_ids, categories = extract_embeddings_with_metadata(model, test_loader, device)
 
     print(f"Extracted {len(embeddings)} embeddings")
-    print(f"Number of unique classes: {len(np.unique(labels))}")
+    print(f"Number of unique products: {len(np.unique(product_ids))}")
+    print(f"Number of unique categories: {len(np.unique(categories))}")
 
-    # For Stanford: use standard retrieval protocol (query != gallery)
+    # For Stanford: use standard retrieval protocol
     # For Fashion-MNIST: split test set
     if dataset_type == 'stanford':
-        # Stanford has separate train/test classes
-        # Use all test as both query and gallery
         query_embs = embeddings
-        query_labels = labels
+        query_product_ids = product_ids
+        query_categories = categories
         gallery_embs = embeddings
-        gallery_labels = labels
+        gallery_product_ids = product_ids
+        gallery_categories = categories
         print("Using all test samples as query and gallery")
     else:
         # Split test set for Fashion-MNIST
         split_idx = len(embeddings) // 2
         query_embs = embeddings[:split_idx]
-        query_labels = labels[:split_idx]
+        query_product_ids = product_ids[:split_idx]
+        query_categories = categories[:split_idx]
         gallery_embs = embeddings[split_idx:]
-        gallery_labels = labels[split_idx:]
+        gallery_product_ids = product_ids[split_idx:]
+        gallery_categories = categories[split_idx:]
         print(f"Query set: {len(query_embs)} samples")
         print(f"Gallery set: {len(gallery_embs)} samples")
 
     # Compute metrics
-    print("\nComputing evaluation metrics...")
+    print("\n" + "=" * 60)
+    print("EVALUATION MODE 1: PRODUCT-LEVEL RETRIEVAL")
+    print("(Finding same product - metric learning evaluation)")
+    print("=" * 60)
 
-    # Recall@K
-    recall_scores = recall_at_k(
-        query_embs, query_labels, gallery_embs, gallery_labels,
+    # Product-level Recall@K (same as before)
+    product_recall_scores = recall_at_k(
+        query_embs, query_product_ids, gallery_embs, gallery_product_ids,
         k_values=[1, 5, 10, 20, 50]
     )
 
-    print("\n" + "=" * 60)
-    print("RETRIEVAL METRICS")
-    print("=" * 60)
-    for k, score in recall_scores.items():
-        print(f"Recall@{k:>2}: {score:.4f} ({score * 100:.2f}%)")
+    for k, score in product_recall_scores.items():
+        print(f"Product Recall@{k:>2}: {score:.4f} ({score * 100:.2f}%)")
 
-    # MAP@K
-    map_score = mean_average_precision(query_embs, query_labels, gallery_embs, gallery_labels, k=10)
-    print(f"\nMean Average Precision@10: {map_score:.4f} ({map_score * 100:.2f}%)")
+    # Product-level MAP@K
+    product_map_score = mean_average_precision(
+        query_embs, query_product_ids, gallery_embs, gallery_product_ids, k=10
+    )
+    print(f"Product MAP@10: {product_map_score:.4f} ({product_map_score * 100:.2f}%)")
+
+    # NEW: Category-level retrieval (for search engine)
+    print("\n" + "=" * 60)
+    print("EVALUATION MODE 2: CATEGORY-LEVEL RETRIEVAL (Search Engine)")
+    print("(Finding similar products, excluding same product)")
+    print("=" * 60)
+
+    # Category Recall@K - exclude same product matches
+    category_recall_scores = recall_at_k(
+        query_embs, query_categories, gallery_embs, gallery_categories,
+        k_values=[1, 5, 10, 20, 50],
+        exclude_same=True,
+        query_ids=query_product_ids,
+        gallery_ids=gallery_product_ids
+    )
+
+    for k, score in category_recall_scores.items():
+        print(f"Category Recall@{k:>2}: {score:.4f} ({score * 100:.2f}%)")
+
+    # Category MAP@K - exclude same product
+    category_map_score = mean_average_precision_exclude_same(
+        query_embs, query_categories, query_product_ids,
+        gallery_embs, gallery_categories, gallery_product_ids, k=10
+    )
+    print(f"Category MAP@10: {category_map_score:.4f} ({category_map_score * 100:.2f}%)")
 
     # Embedding statistics
     print("\n" + "=" * 60)
@@ -319,13 +465,29 @@ def main(args):
         'backbone': backbone,
         'embedding_size': embedding_size,
         'test_samples': len(embeddings),
-        'num_classes': len(np.unique(labels)),
-        'recall@1': float(recall_scores[1]),
-        'recall@5': float(recall_scores[5]),
-        'recall@10': float(recall_scores[10]),
-        'recall@20': float(recall_scores[20]),
-        'recall@50': float(recall_scores[50]),
-        'map@10': float(map_score),
+        'num_unique_products': len(np.unique(product_ids)),
+        'num_categories': len(np.unique(categories)),
+
+        # Product-level metrics (metric learning evaluation)
+        'product_metrics': {
+            'recall@1': float(product_recall_scores[1]),
+            'recall@5': float(product_recall_scores[5]),
+            'recall@10': float(product_recall_scores[10]),
+            'recall@20': float(product_recall_scores[20]),
+            'recall@50': float(product_recall_scores[50]),
+            'map@10': float(product_map_score),
+        },
+
+        # Category-level metrics (search engine evaluation - excludes same product)
+        'category_metrics': {
+            'recall@1': float(category_recall_scores[1]),
+            'recall@5': float(category_recall_scores[5]),
+            'recall@10': float(category_recall_scores[10]),
+            'recall@20': float(category_recall_scores[20]),
+            'recall@50': float(category_recall_scores[50]),
+            'map@10': float(category_map_score),
+        },
+
         'total_params': sum(p.numel() for p in model.parameters()),
         'embedding_stats': {
             'mean': float(embeddings.mean()),
