@@ -447,7 +447,7 @@ def main(args):
         categories = categories[:truncate]
         print(f"Truncated to {truncate} samples for viz-only")
     else:
-        embeddings, productids, categories = extract_embeddings_with_metadata(model, test_loader, device)
+        embeddings, product_ids, categories = extract_embeddings_with_metadata(model, test_loader, device)
 
     print(f"Extracted {len(embeddings)} embeddings")
     print(f"Number of unique products: {len(np.unique(product_ids))}")
