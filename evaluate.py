@@ -425,13 +425,13 @@ def main(args):
     if args.viz_only:
         print("Viz-only mode: computing embeddings for small batch only...")
         test_batch_loader = DataLoader(test_loader.dataset, batch_size=args.batch_size, shuffle=True, num_workers=4)
-        embeddings, productids, categories = extract_embeddings_with_metadata(model, test_batch_loader, device)
+        embeddings, product_ids, categories = extract_embeddings_with_metadata(model, test_batch_loader, device)
         torch.cuda.empty_cache()
         gc.collect()
         # Truncate to first 1000 for speed
         truncate = 1000
         embeddings = embeddings[:truncate]
-        productids = productids[:truncate]
+        product_ids = product_ids[:truncate]
         categories = categories[:truncate]
         print(f"Truncated to {truncate} samples for viz-only")
     else:
@@ -439,7 +439,7 @@ def main(args):
 
 
     print(f"Extracted {len(embeddings)} embeddings")
-    print(f"Number of unique products: {len(np.unique(productids))}")
+    print(f"Number of unique products: {len(np.unique(product_ids))}")
     print(f"Number of unique categories: {len(np.unique(categories))}")
 
     # For Stanford: use standard retrieval protocol
