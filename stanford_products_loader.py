@@ -1,6 +1,17 @@
 """
 Stanford Online Products Dataset Loader
-120K images, 22K classes, designed for image retrieval
+120K images, 22K unique products, 12 categories, designed for image retrieval
+
+Dataset Structure:
+- 12 categories: bicycle, cabinet, chair, coffee_maker, fan, kettle, lamp, mug, sofa, stapler, table, toaster
+- 22,634 unique product classes (each product has multiple photos from different angles)
+- 120,053 total images
+- Task: Learn embeddings where different photos of the SAME product are close together
+- Training uses disjoint product classes from testing (different products, not overlapping)
+
+Validation Strategy:
+- Split by product classes (not individual samples) since some products have few images
+- 90% of products for training, 10% for validation
 """
 
 import os
@@ -15,7 +26,20 @@ from collections import defaultdict
 class StanfordProductsDataset(Dataset):
     """
     Stanford Online Products dataset for image retrieval
-    
+
+    The dataset contains multiple photos of the same product from different angles.
+    The goal is to learn embeddings where photos of the same product are similar.
+
+    Key IDs in the dataset:
+    - class_id (1-22634): Unique product identifier - this is what we train on
+    - super_class_id (1-12): Product category (bicycle, chair, etc.)
+
+    Validation Split Strategy:
+    Since some products have very few images (2-3), we split by CLASSES rather than samples:
+    - 90% of product classes → training set
+    - 10% of product classes → validation set
+    This ensures each product's images stay together.
+
     Structure:
     Stanford_Online_Products/
         ├── bicycle_final/
@@ -23,11 +47,11 @@ class StanfordProductsDataset(Dataset):
         │   └── ...
         ├── Ebay_train.txt
         └── Ebay_test.txt
-    
+
     Format of txt files:
     image_id class_id super_class_id path
     """
-    
+
     def __init__(self, root_dir, split='train', transform=None):
         """
         Args:
@@ -38,23 +62,23 @@ class StanfordProductsDataset(Dataset):
         self.root_dir = Path(root_dir)
         self.split = split
         self.transform = transform
-        
+
         # Load split file
         if split == 'train':
             split_file = self.root_dir / 'Ebay_train.txt'
         else:
             split_file = self.root_dir / 'Ebay_test.txt'
-        
+
         # Parse split file
         self.image_paths = []
         self.labels = []
         self.super_labels = []
-        
+
         print(f"Loading {split} split from {split_file}...")
-        
+
         with open(split_file, 'r') as f:
             lines = f.readlines()[1:]  # Skip header
-            
+
             for line in lines:
                 parts = line.strip().split()
                 if len(parts) >= 4:
@@ -62,44 +86,51 @@ class StanfordProductsDataset(Dataset):
                     class_id = int(parts[1])
                     super_class_id = int(parts[2])
                     path = ' '.join(parts[3:])  # Handle paths with spaces
-                    
+
                     full_path = self.root_dir / path
                     if full_path.exists():
                         self.image_paths.append(str(full_path))
                         self.labels.append(class_id)
                         self.super_labels.append(super_class_id)
-        
+
         # Create label mapping (original class IDs might not be continuous)
         unique_labels = sorted(set(self.labels))
         self.label_to_idx = {label: idx for idx, label in enumerate(unique_labels)}
         self.idx_to_label = {idx: label for label, idx in self.label_to_idx.items()}
-        
+
         # Remap labels to continuous indices
         self.labels = [self.label_to_idx[label] for label in self.labels]
-        
+
         print(f"Loaded {len(self.image_paths)} images")
         print(f"Number of classes: {len(unique_labels)}")
-        
+
         # Create validation split from train if needed
         if split == 'train':
-            # Use 90% for train, 10% for validation
-            n_train = int(0.9 * len(self.image_paths))
-            
-            # Split while keeping classes balanced
-            from sklearn.model_selection import train_test_split
-            indices = list(range(len(self.image_paths)))
-            train_indices, val_indices = train_test_split(
-                indices, 
-                test_size=0.1, 
-                stratify=self.labels,
-                random_state=42
-            )
-            
+            # Split by classes instead of by samples to avoid stratification issues
+            # Some products have very few images, so we split entire classes
+            import random
+            random.seed(42)
+
+            unique_classes = list(set(self.labels))
+            random.shuffle(unique_classes)
+
+            # Use 90% of classes for training, 10% for validation
+            n_train_classes = int(0.9 * len(unique_classes))
+            train_classes = set(unique_classes[:n_train_classes])
+            val_classes = set(unique_classes[n_train_classes:])
+
+            # Split indices based on class membership
+            train_indices = [i for i, label in enumerate(self.labels) if label in train_classes]
+            val_indices = [i for i, label in enumerate(self.labels) if label in val_classes]
+
             # Store both splits
             self._all_image_paths = self.image_paths.copy()
             self._all_labels = self.labels.copy()
             self.train_indices = train_indices
             self.val_indices = val_indices
+
+            print(f"Split into {len(train_classes)} train classes and {len(val_classes)} val classes")
+            print(f"Train samples: {len(train_indices)}, Val samples: {len(val_indices)}")
             
             # Use train indices by default
             self.image_paths = [self._all_image_paths[i] for i in train_indices]
