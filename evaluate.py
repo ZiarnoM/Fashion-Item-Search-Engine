@@ -164,7 +164,7 @@ def mean_average_precision_exclude_same(query_embs, query_labels, query_ids,
 
 def visualize_retrieval(model, test_loader, device, num_examples=5, dataset_type="fashionmnist",
                         query_embs=None, query_labels=None, gallery_embs=None, gallery_labels=None,
-                        query_images=None):
+                        query_product_ids=None, gallery_product_ids=None):
     """
     Visualize retrieval results.
     If precomputed embeddings/labels provided, use them (for mode 2).
@@ -180,16 +180,11 @@ def visualize_retrieval(model, test_loader, device, num_examples=5, dataset_type
             embeddings = model(test_images_gpu).cpu().numpy()
         query_embs = embeddings
         gallery_embs = embeddings
-        query_labels = test_labels
-        gallery_labels = test_labels
-        query_images = test_images
+        query_labels = test_labels.numpy()
+        gallery_labels = test_labels.numpy()
+        use_precomputed = False
     else:
-        if query_images is None:
-            # Fallback: get batch if no images provided
-            test_images, _ = next(iter(test_loader))
-        else:
-            test_images = query_images
-        test_labels = query_labels
+        use_precomputed = True
 
     # For mode 2 category-level: pick diverse categories
     all_labels = query_labels if isinstance(query_labels, np.ndarray) else query_labels.numpy()
@@ -202,21 +197,34 @@ def visualize_retrieval(model, test_loader, device, num_examples=5, dataset_type
     if len(chosen_labels) == 1:
         axes = np.expand_dims(axes, 0)
 
+    # Helper function to load image by index from dataset
+    def load_image_by_idx(idx):
+        """Load an image from the dataset by its index"""
+        dataset = test_loader.dataset
+        img, _ = dataset[idx]
+        return img
+
+    # Denormalize function
+    def denorm_img(img):
+        img = img * torch.tensor([0.229, 0.224, 0.225]).view(3, 1, 1)
+        img = img + torch.tensor([0.485, 0.456, 0.406]).view(3, 1, 1)
+        return torch.clamp(img, 0, 1)
+
     for i, cat in enumerate(chosen_labels):
         # Pick one random query from this category
         candidate_indices = np.where(all_labels == cat)[0]
         query_idx = np.random.choice(candidate_indices)
         query_emb = query_embs[query_idx]
-        query_label = int(query_labels[query_idx].item())
+        query_label = int(query_labels[query_idx])
 
         # Compute similarities
         sims = compute_similarity(query_emb, gallery_embs)
 
         # Exclude same product if product IDs available (mode 2)
         exclude_same = False
-        if 'queryproductids' in locals() and 'galleryproductids' in locals():
-            q_id = queryproductids[query_idx]
-            valid_mask = galleryproductids != q_id
+        if query_product_ids is not None and gallery_product_ids is not None:
+            q_id = query_product_ids[query_idx]
+            valid_mask = gallery_product_ids != q_id
             exclude_same = True
         else:
             valid_mask = np.ones_like(sims, dtype=bool)
@@ -224,28 +232,32 @@ def visualize_retrieval(model, test_loader, device, num_examples=5, dataset_type
         sorted_indices = np.argsort(sims[valid_mask])[::-1]
         gallery_indices = np.where(valid_mask)[0][sorted_indices[:5]]  # top 5
 
-        # Denormalize function
-        def denorm_img(img):
-            img = img * torch.tensor([0.229, 0.224, 0.225]).view(3, 1, 1)
-            img = img + torch.tensor([0.485, 0.456, 0.406]).view(3, 1, 1)
-            return torch.clamp(img, 0, 1)
-
         # Plot query
         ax = axes[i, 0]
-        query_img = denorm_img(test_images[query_idx]).permute(1, 2, 0).numpy()
+        if use_precomputed:
+            query_img = load_image_by_idx(query_idx)
+        else:
+            query_img = test_images[query_idx]
+        query_img = denorm_img(query_img).permute(1, 2, 0).numpy()
         ax.imshow(query_img)
-        ax.set_title(f"Query cat {query_label}", fontsize=10)
+        ax.set_title(f"Query\nCategory: {query_label}", fontsize=10)
         ax.axis("off")
 
         # Plot top 5 results
         for j, idx in enumerate(gallery_indices):
             ax = axes[i, j + 1]
-            result_label = int(gallery_labels[idx].item())
-            result_img = denorm_img(test_images[idx]).permute(1, 2, 0).numpy()
+            result_label = int(gallery_labels[idx])
+
+            if use_precomputed:
+                result_img = load_image_by_idx(idx)
+            else:
+                result_img = test_images[idx]
+            result_img = denorm_img(result_img).permute(1, 2, 0).numpy()
+
             color = "green" if result_label == query_label else "red"
             sim_val = sims[idx]
             ax.imshow(result_img)
-            ax.set_title(f"{sim_val:.3f}\ncat {result_label}", fontsize=9, color=color)
+            ax.set_title(f"Sim: {sim_val:.3f}\nCat: {result_label}", fontsize=9, color=color)
             ax.axis("off")
 
     plt.tight_layout()
@@ -254,7 +266,7 @@ def visualize_retrieval(model, test_loader, device, num_examples=5, dataset_type
     mode_str = "_mode2_categories" if exclude_same else "_product_level"
     save_path = f"results/retrieval_visualization{mode_str}.png"
     plt.savefig(save_path, dpi=150, bbox_inches="tight")
-    print(f"Saved retrieval visualization to {save_path}")
+    print(f"✓ Saved retrieval visualization to {save_path}")
     plt.close()
 
 
@@ -437,7 +449,6 @@ def main(args):
     else:
         embeddings, productids, categories = extract_embeddings_with_metadata(model, test_loader, device)
 
-
     print(f"Extracted {len(embeddings)} embeddings")
     print(f"Number of unique products: {len(np.unique(product_ids))}")
     print(f"Number of unique categories: {len(np.unique(categories))}")
@@ -564,18 +575,14 @@ def main(args):
 
     # Visualize retrievals
     print("\nGenerating retrieval visualizations...")
-    # print("Printing retrieval visualizations (product-level)...")
-    # visualize_retrieval(model, test_loader, device, num_examples=5, dataset_type=dataset_type)
 
-    # Get a test batch for images (same as product-level uses)
-    test_images, _ = next(iter(test_loader))
-
-    print("Printing retrieval visualizations (mode 2 - category-level, diverse categories)...")
+    print("Creating category-level retrieval visualizations (excludes same product)...")
     visualize_retrieval(
         model, test_loader, device, num_examples=10, dataset_type=dataset_type,
         query_embs=query_embs, query_labels=query_categories,
         gallery_embs=gallery_embs, gallery_labels=gallery_categories,
-        query_images=test_images  # Pass images for visualization
+        query_product_ids=query_product_ids,
+        gallery_product_ids=gallery_product_ids
     )
 
     print("\n" + "=" * 60)
