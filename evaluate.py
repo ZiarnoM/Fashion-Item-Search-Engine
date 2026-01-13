@@ -184,7 +184,7 @@ def visualize_retrieval(model, test_loader, device, num_examples=5, dataset_type
         test_labels = query_labels
 
     # For mode 2 category-level: pick diverse categories
-    all_labels = query_labels.numpy()
+    all_labels = query_labels if isinstance(query_labels, np.ndarray) else query_labels.numpy()
     unique_labels = np.unique(all_labels)
     chosen_labels = np.random.choice(unique_labels,
                                      size=min(num_examples, len(unique_labels)),
