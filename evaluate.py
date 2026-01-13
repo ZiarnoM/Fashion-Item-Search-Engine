@@ -416,7 +416,18 @@ def main(args):
 
     # Extract embeddings with metadata
     print("\nExtracting embeddings from test set...")
-    embeddings, product_ids, categories = extract_embeddings_with_metadata(model, test_loader, device)
+    if args.viz_only:
+        print("Viz-only mode: computing embeddings for small batch only...")
+        test_batch_loader = DataLoader(test_loader.dataset, batch_size=128, shuffle=True, num_workers=4)
+        embeddings, productids, categories = extract_embeddings_with_metadata(model, test_batch_loader, device)
+        # Truncate to first 1000 for speed
+        truncate = 1000
+        embeddings = embeddings[:truncate]
+        productids = productids[:truncate]
+        categories = categories[:truncate]
+        print(f"Truncated to {truncate} samples for viz-only")
+    else:
+        embeddings, productids, categories = extract_embeddings_with_metadata(model, test_loader, device)
 
     print(f"Extracted {len(embeddings)} embeddings")
     print(f"Number of unique products: {len(np.unique(product_ids))}")
@@ -572,5 +583,6 @@ if __name__ == '__main__':
                         help='Dataset type (if not in model checkpoint)')
     parser.add_argument('--batch_size', type=int, default=128,
                         help='Batch size for evaluation')
+    parser.add_argument("--viz_only", action="store_true", help="Skip metrics, just do visualization")
     args = parser.parse_args()
     main(args)
