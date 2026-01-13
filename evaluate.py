@@ -1,4 +1,5 @@
 import torch
+import gc
 import torch.nn as nn
 import torchvision
 from torchvision import transforms, datasets
@@ -13,6 +14,9 @@ import seaborn as sns
 
 from train import EmbeddingNet
 from stanford_products_loader import StanfordProductsDataset
+
+torch.cuda.empty_cache()
+gc.collect()
 
 
 @torch.no_grad()
@@ -373,6 +377,8 @@ def extract_embeddings_with_metadata(model, loader, device):
     product_ids = np.array(all_product_ids)
     categories = np.array(all_categories)
 
+    torch.cuda.empty_cache()  # Add at end
+
     return embeddings, product_ids, categories
 
 
@@ -420,6 +426,8 @@ def main(args):
         print("Viz-only mode: computing embeddings for small batch only...")
         test_batch_loader = DataLoader(test_loader.dataset, batch_size=128, shuffle=True, num_workers=4)
         embeddings, productids, categories = extract_embeddings_with_metadata(model, test_batch_loader, device)
+        torch.cuda.empty_cache()
+        gc.collect()
         # Truncate to first 1000 for speed
         truncate = 1000
         embeddings = embeddings[:truncate]
