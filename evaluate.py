@@ -12,6 +12,7 @@ import json
 import matplotlib.pyplot as plt
 import seaborn as sns
 
+
 from train import EmbeddingNet
 from stanford_products_loader import StanfordProductsDataset
 
@@ -93,6 +94,16 @@ def recall_at_k(query_embs, query_labels, gallery_embs, gallery_labels, k_values
     # Average recalls
     recall_scores = {k: np.mean(recalls[k]) for k in k_values}
     return recall_scores
+
+def precision_at_k(query_embs, query_labels, gallery_embs, gallery_labels, k=5):
+    precisions = []
+    for query_emb, query_label in zip(query_embs, query_labels):
+        sims = compute_similarity(query_emb, gallery_embs)
+        top_k = np.argsort(sims)[::-1][:k]
+        top_k_labels = gallery_labels[top_k]
+        precision = (top_k_labels == query_label).sum() / k
+        precisions.append(precision)
+    return np.mean(precisions)
 
 
 def mean_average_precision(query_embs, query_labels, gallery_embs, gallery_labels, k=10):
@@ -453,6 +464,15 @@ def main(args):
     print(f"Number of unique products: {len(np.unique(product_ids))}")
     print(f"Number of unique categories: {len(np.unique(categories))}")
 
+    for cat in range(1, 13):
+        cat_mask = categories == cat
+        cat_embeddings = embeddings[cat_mask]
+        if len(cat_embeddings) > 1:
+            # Compute pairwise distances
+            from scipy.spatial.distance import pdist
+            distances = pdist(cat_embeddings, metric='cosine')
+            print(f"Category {cat}: Mean distance={distances.mean():.4f}, Std={distances.std():.4f}")
+
     # For Stanford: use standard retrieval protocol
     # For Fashion-MNIST: split test set
     if dataset_type == 'stanford':
@@ -529,6 +549,15 @@ def main(args):
     print(f"Embedding mean: {embeddings.mean():.4f}")
     print(f"Embedding std: {embeddings.std():.4f}")
     print(f"Embedding L2 norm (avg): {np.linalg.norm(embeddings, axis=1).mean():.4f}")
+
+    print("\n" + "=" * 60)
+    print("EVALUATION: PRECISION@K")
+    print("=" * 60)
+
+    k_values = [1, 5, 10, 20]
+    for k in k_values:
+        precision = precision_at_k(query_embs, query_categories, gallery_embs, gallery_categories, k=k)
+        print(f"Precision@{k}: {precision:.4f} ({precision * 100:.2f}%)")
 
     # Save results
     results = {
