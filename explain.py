@@ -98,12 +98,13 @@ def main(args):
         query_img = denorm_img(load_image_by_idx(test_dataset, query_idx)).permute(1,2,0).cpu().numpy()
 
         # Query CAM (self-similarity proxy)
-        img_q = load_image_by_idx(test_dataset, query_idx).unsqueeze(0).to(device)
-        with torch.enable_grad():
+        with torch.set_grad_enabled(True):
+            img_q = load_image_by_idx(test_dataset, query_idx).unsqueeze(0).to(device)
+            img_q.requires_grad_()  # Ensure the input tensor requires gradients
             out = model(img_q)
             proxy_score = F.cosine_similarity(out, query_emb.unsqueeze(0)).sum()
             proxy_score.backward(retain_graph=True)
-        cams = cam_extractor(img_q, scores=None)
+            cams = cam_extractor(img_q, scores=None)
         heatmap_q = cams[0].squeeze(0).cpu().sigmoid()
         axes[0,0].imshow(query_img)
         axes[0,0].imshow(heatmap_q, cmap='jet', alpha=0.5)
