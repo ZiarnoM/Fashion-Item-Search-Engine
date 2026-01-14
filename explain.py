@@ -76,7 +76,8 @@ def main(args):
     unique_cats = np.unique(categories)
     print("Unique categories found:", unique_cats)
 
-    for cat in tqdm(unique_cats[:args.num_categories], desc="Generating explanations"):
+    # for cat in tqdm(unique_cats[:args.num_categories], desc="Generating explanations"):
+    for cat in unique_cats[:args.num_categories]:
         cat_mask = categories == cat
         cat_embs = embeddings[cat_mask]
         if len(cat_embs) < 10: continue
@@ -129,8 +130,8 @@ def main(args):
         plt.suptitle(f'Grad-CAM++ Explanations: Category {cat}')
         plt.tight_layout()
         output_path = f'results/explain/explanations_category_{cat}.png'
-        tqdm.write(f"Saving explanation to: {output_path}")
-        # print(f"Saving explanation to: {output_path}")
+        # tqdm.write(f"Saving explanation to: {output_path}")
+        print(f"Saving explanation to: {output_path}")
         plt.savefig(output_path, dpi=150, bbox_inches='tight')
         plt.close()
 
