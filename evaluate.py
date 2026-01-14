@@ -525,7 +525,7 @@ def main(args):
     # Category Recall@K - exclude same product matches
     category_recall_scores = recall_at_k(
         query_embs, query_categories, gallery_embs, gallery_categories,
-        k_values=[1, 5, 10, 20, 50],
+        k_values=[1, 5, 10, 20],
         exclude_same=True,
         query_ids=query_product_ids,
         gallery_ids=gallery_product_ids
@@ -585,7 +585,7 @@ def main(args):
             'recall@5': float(category_recall_scores[5]),
             'recall@10': float(category_recall_scores[10]),
             'recall@20': float(category_recall_scores[20]),
-            'recall@50': float(category_recall_scores[50]),
+            # 'recall@50': float(category_recall_scores[50]),
             'map@10': float(category_map_score),
         },
 

@@ -8,6 +8,7 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 import numpy as np
 from pathlib import Path
+import os
 
 # Set style
 sns.set_style("whitegrid")
@@ -170,7 +171,9 @@ def plot_all_metrics(models=['resnet50', 'efficientnet']):
     ax.set_title('Training Summary', fontweight='bold', fontsize=12, pad=20)
     
     plt.tight_layout()
-    plt.savefig('results/training_dynamics.png', dpi=300, bbox_inches='tight')
+    output_dir = f'results/{model_name}'
+    os.makedirs(output_dir, exist_ok=True)
+    plt.savefig(f'{output_dir}/training_dynamics.png', dpi=300, bbox_inches='tight')
     print("✓ Saved training_dynamics.png")
     plt.show()
 
@@ -209,14 +212,14 @@ def plot_individual_model(model_name):
     ax.plot(epochs, history['learning_rate'], 
            color='#45B7D1', linewidth=2.5, marker='D', markersize=4)
     
-    # Annotate LR reductions
-    lr_values = history['learning_rate']
-    for i in range(1, len(lr_values)):
-        if lr_values[i] < lr_values[i-1]:
-            ax.annotate('LR Reduced', xy=(i, lr_values[i]), 
-                       xytext=(i, lr_values[i]*3),
-                       arrowprops=dict(arrowstyle='->', color='red', lw=1.5),
-                       fontsize=8, color='red')
+    # # Annotate LR reductions
+    # lr_values = history['learning_rate']
+    # for i in range(1, len(lr_values)):
+    #     if lr_values[i] < lr_values[i-1]:
+    #         ax.annotate('LR Reduced', xy=(i, lr_values[i]),
+    #                    xytext=(i, lr_values[i]*3),
+    #                    arrowprops=dict(arrowstyle='->', color='red', lw=1.5),
+    #                    fontsize=8, color='red')
     
     ax.set_xlabel('Epoch', fontsize=11)
     ax.set_ylabel('Learning Rate', fontsize=11)
@@ -273,9 +276,11 @@ def plot_individual_model(model_name):
                     cell.set_facecolor('#F8F8F8')
     
     ax.set_title('Training Summary', fontsize=12, fontweight='bold', pad=20)
-    
+
     plt.tight_layout()
-    plt.savefig(f'results/{model_name}_detailed.png', dpi=300, bbox_inches='tight')
+    output_dir = f'results/{model_name}'
+    os.makedirs(output_dir, exist_ok=True)
+    plt.savefig(f'{output_dir}/{model_name}_detailed.png', dpi=300, bbox_inches='tight')
     print(f"✓ Saved {model_name}_detailed.png")
     plt.show()
 
@@ -355,7 +360,7 @@ if __name__ == '__main__':
     # Check which models have history files
     available_models = []
     # for model in ['resnet50', 'efficientnet']:
-    for model in ['stanford_resnet50' ]:
+    for model in ['stanford_resnet50_multi_similarity' ]:
         if Path(f'results/{model}_history.json').exists():
             available_models.append(model)
     
