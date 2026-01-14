@@ -49,19 +49,19 @@ def main(args):
     # Setup GradCAMpp on backbone
     cam_extractor = GradCAMpp(model.backbone, target_layer='7.0.conv3')
 
-    # Load small test batch for viz (like --vizonly)
-    test_transform = transforms.Compose([
-        transforms.Resize(256),
-        transforms.CenterCrop(224),
-        transforms.ToTensor(),
-        transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])
-    ])
-    test_dataset = StanfordProductsDataset('data/Stanford_Online_Products', 'test', transform=test_transform)
-    test_loader = torch.utils.data.DataLoader(test_dataset, batch_size=args.batch_size, shuffle=True, num_workers=4)
-
-    # Extract embeddings (reuse your logic)
-    embeddings, product_ids, categories = extract_embeddings_with_metadata(model, test_loader, device)
-    torch.cuda.empty_cache(); gc.collect()
+    with torch.set_grad_enabled(True):
+        # Load small test batch for visualization
+        test_transform = transforms.Compose([
+            transforms.Resize(256),
+            transforms.CenterCrop(224),
+            transforms.ToTensor(),
+            transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])
+        ])
+        test_dataset = StanfordProductsDataset('data/Stanford_Online_Products', 'test', transform=test_transform)
+        test_loader = torch.utils.data.DataLoader(test_dataset, batch_size=args.batch_size, shuffle=True, num_workers=4)
+        torch.cuda.empty_cache();
+        gc.collect()
+        embeddings, product_ids, categories = extract_embeddings_with_metadata(model, test_loader, device)
 
     # Truncate for speed
     N = 1000
@@ -80,7 +80,10 @@ def main(args):
     for cat in unique_cats[:args.num_categories]:
         cat_mask = categories == cat
         cat_embs = embeddings[cat_mask]
-        if len(cat_embs) < 10: continue
+        if len(cat_embs) < 10:
+            print("jd")
+            continue
+
 
         # Pick random query
         query_idx = np.random.choice(np.where(cat_mask)[0])
@@ -140,18 +143,27 @@ def main(args):
 # Paste your extract_embeddings_with_metadata from evaluate.py here (or import if modularized)
 def extract_embeddings_with_metadata(model, loader, device):
     model.eval()
-    all_embs, all_pids, all_cats = [], [], []
-    for images, labels in tqdm(loader, desc="Extracting embeddings"):
-        images = images.to(device)
-        embs = model(images).detach().cpu().numpy()
-        all_embs.append(embs)
-        # Add product_ids, categories logic from your evaluate.py
-        # Placeholder: assume loader.dataset has them
-        batch_pids = labels.numpy()  # Adapt to your dataset
-        batch_cats = labels.numpy()  # Adapt
-        all_pids.extend(batch_pids)
-        all_cats.extend(batch_cats)
-    return np.vstack(all_embs), np.array(all_pids), np.array(all_cats)
+
+    all_embs = []
+    all_pids = []
+    all_cats = []
+
+    with torch.no_grad():
+        for images, labels in tqdm(loader, desc="Extracting embeddings"):
+            images = images.to(device)
+            embs = model(images).cpu().numpy()   # (B, 256)
+
+            # store each embedding separately
+            for i in range(len(embs)):
+                all_embs.append(embs[i])        # (256,)
+                all_pids.append(labels[i].item())
+                all_cats.append(labels[i].item())   # replace with real category later
+
+    return (
+        np.array(all_embs),   # (N, 256)
+        np.array(all_pids),   # (N,)
+        np.array(all_cats)    # (N,)
+    )
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
