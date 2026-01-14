@@ -141,7 +141,6 @@ def main(args):
 
     print("Explanations saved to results/explanations_category_*.png")
 
-# Paste your extract_embeddings_with_metadata from evaluate.py here (or import if modularized)
 def extract_embeddings_with_metadata(model, loader, device):
     model.eval()
 
@@ -149,11 +148,16 @@ def extract_embeddings_with_metadata(model, loader, device):
     all_pids = []
     all_cats = []
 
+    torch.set_grad_enabled(False)
+
     with torch.no_grad():
         for images, labels in tqdm(loader, desc="Extracting embeddings"):
             images = images.to(device)
-            embs = model(images).cpu().numpy()   # (B, 256)
+            embs = model(images)
+            if isinstance(embs, tuple):
+                embs = embs[0]
 
+            embs = embs.detach().cpu().numpy()
             # store each embedding separately
             for i in range(len(embs)):
                 all_embs.append(embs[i])        # (256,)
