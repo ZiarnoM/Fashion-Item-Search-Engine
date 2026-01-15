@@ -1,179 +1,310 @@
-# explain.py - Standalone XAI for your Stanford ResNet50 MultiSimilarity model
+"""
+Explainability for Image Retrieval Model using Grad-CAM++
+Shows which parts of images the model focuses on for similarity
+"""
+
 import argparse
-import json
-import gc
+import os
 import torch
 import torch.nn.functional as F
 import numpy as np
 import matplotlib.pyplot as plt
 from tqdm import tqdm
-from PIL import Image
 from torchvision import transforms
-from torchcam.methods import GradCAMpp
-from torchcam.utils import overlay_mask
-from train import EmbeddingNet  # Reuse your model class
+from PIL import Image
+
+# For Grad-CAM
+from pytorch_grad_cam import GradCAMPlusPlus
+from pytorch_grad_cam.utils.image import show_cam_on_image
+
+from train import EmbeddingNet
 from stanford_products_loader import StanfordProductsDataset
-import os
 
-# Copy these helpers from evaluate.py
-def load_image_by_idx(dataset, idx):
-    img, _ = dataset[idx]
-    return img
 
-def denorm_img(img):
+def denorm_img(img_tensor):
+    """Denormalize image tensor to [0,1] for visualization"""
     mean = torch.tensor([0.485, 0.456, 0.406]).view(3, 1, 1)
     std = torch.tensor([0.229, 0.224, 0.225]).view(3, 1, 1)
-    img = img * std + mean
+    img = img_tensor * std + mean
     return torch.clamp(img, 0, 1)
 
-def computesimilarity(query_emb, gallery_embs):
-    similarities = np.dot(gallery_embs, query_emb)
-    return similarities
+
+def compute_similarity(query_emb, gallery_embs):
+    """Cosine similarity"""
+    return np.dot(gallery_embs, query_emb)
+
+
+def extract_embeddings(model, dataset, device, max_samples=2000):
+    """Extract embeddings from dataset"""
+    model.eval()
+
+    embeddings = []
+    product_ids = []
+    categories = []
+    indices = []
+
+    # Sample indices
+    sample_indices = np.random.choice(len(dataset), min(max_samples, len(dataset)), replace=False)
+
+    with torch.no_grad():
+        for idx in tqdm(sample_indices, desc="Extracting embeddings"):
+            img, label = dataset[idx]
+            img = img.unsqueeze(0).to(device)
+            emb = model(img).cpu().numpy()[0]
+
+            embeddings.append(emb)
+            product_ids.append(label)
+            categories.append(dataset.super_labels[idx])
+            indices.append(idx)
+
+    return (
+        np.array(embeddings),
+        np.array(product_ids),
+        np.array(categories),
+        np.array(indices)
+    )
+
+
+class EmbeddingModelWrapper(torch.nn.Module):
+    """Wrapper to make the model compatible with Grad-CAM"""
+
+    def __init__(self, model):
+        super().__init__()
+        self.model = model
+        self.embedding = None
+
+    def forward(self, x):
+        # Forward through model
+        emb = self.model(x)
+        self.embedding = emb
+
+        # For Grad-CAM, we need a scalar output
+        # Use L2 norm as a proxy (all embeddings should have similar norm)
+        return emb.norm(dim=1, keepdim=True)
+
+
+def generate_gradcam_for_pair(model, img1_tensor, img2_tensor, target_layers, device):
+    """
+    Generate Grad-CAM for both images in a similar pair
+
+    Args:
+        img1_tensor: Query image (1, 3, 224, 224)
+        img2_tensor: Retrieved image (1, 3, 224, 224)
+    """
+    # Prepare images for visualization (RGB in [0,1])
+    img1_vis = denorm_img(img1_tensor[0]).permute(1, 2, 0).cpu().numpy()
+    img2_vis = denorm_img(img2_tensor[0]).permute(1, 2, 0).cpu().numpy()
+
+    # Create Grad-CAM for image 1
+    cam1 = GradCAMPlusPlus(model, target_layers=target_layers)
+
+    # Reshape target for Grad-CAM (it expects [batch, classes])
+    def custom_forward(x):
+        return model(x)  # Returns (batch, 1) from wrapper
+
+    # Generate CAM for query
+    img1_input = img1_tensor.to(device)
+    img1_input.requires_grad = True
+
+    grayscale_cam1 = cam1(input_tensor=img1_input, targets=None)
+    cam1_on_image = show_cam_on_image(img1_vis, grayscale_cam1[0], use_rgb=True)
+
+    # Generate CAM for retrieved image
+    img2_input = img2_tensor.to(device)
+    img2_input.requires_grad = True
+
+    grayscale_cam2 = cam1(input_tensor=img2_input, targets=None)
+    cam2_on_image = show_cam_on_image(img2_vis, grayscale_cam2[0], use_rgb=True)
+
+    return img1_vis, img2_vis, cam1_on_image, cam2_on_image
+
+
+def visualize_explanations(model, dataset, embeddings, product_ids, categories, indices,
+                           num_categories=5, device='cuda'):
+    """Generate explanation visualizations for multiple categories"""
+
+    # Wrap model for Grad-CAM
+    model_wrapper = EmbeddingModelWrapper(model)
+    target_layers = [model.backbone[-1]]  # Last layer of ResNet
+
+    os.makedirs('results/explain', exist_ok=True)
+
+    # Get unique categories
+    unique_cats = np.unique(categories)
+    print(f"Found {len(unique_cats)} unique categories")
+
+    selected_cats = unique_cats[:min(num_categories, len(unique_cats))]
+
+    for cat in selected_cats:
+        print(f"\nGenerating explanations for category {cat}...")
+
+        # Get samples from this category
+        cat_mask = categories == cat
+        if cat_mask.sum() < 10:
+            print(f"  Skipping category {cat} (too few samples)")
+            continue
+
+        cat_indices = indices[cat_mask]
+        cat_embeddings = embeddings[cat_mask]
+        cat_products = product_ids[cat_mask]
+
+        # Pick a random query
+        query_local_idx = np.random.randint(len(cat_indices))
+        query_idx = cat_indices[query_local_idx]
+        query_emb = cat_embeddings[query_local_idx]
+        query_product = cat_products[query_local_idx]
+
+        # Find similar images (exclude same product)
+        valid_mask = cat_products != query_product
+        valid_embeddings = cat_embeddings[valid_mask]
+        valid_indices = cat_indices[valid_mask]
+
+        if len(valid_embeddings) < 5:
+            print(f"  Not enough different products in category {cat}")
+            continue
+
+        # Compute similarities
+        sims = compute_similarity(query_emb, valid_embeddings)
+        top_5 = np.argsort(sims)[-5:][::-1]  # Top 5 in descending order
+
+        # Create visualization
+        fig = plt.figure(figsize=(20, 8))
+
+        # Load query image
+        query_img, _ = dataset[query_idx]
+        query_img_tensor = query_img.unsqueeze(0)
+
+        # Row 1: Original images
+        # Row 2: Grad-CAM heatmaps
+
+        # Query image
+        ax = plt.subplot(2, 6, 1)
+        query_vis = denorm_img(query_img).permute(1, 2, 0).cpu().numpy()
+        ax.imshow(query_vis)
+        ax.set_title(f'Query\n(Cat {cat})', fontsize=12, fontweight='bold')
+        ax.axis('off')
+
+        # Query Grad-CAM
+        ax = plt.subplot(2, 6, 7)
+        try:
+            cam = GradCAMPlusPlus(model_wrapper, target_layers=target_layers)
+            query_input = query_img_tensor.to(device)
+            query_input.requires_grad = True
+            grayscale_cam = cam(input_tensor=query_input, targets=None)
+            cam_image = show_cam_on_image(query_vis, grayscale_cam[0], use_rgb=True)
+            ax.imshow(cam_image)
+        except Exception as e:
+            print(f"  Warning: Grad-CAM failed for query: {e}")
+            ax.imshow(query_vis)
+        ax.set_title('Query Attention', fontsize=10)
+        ax.axis('off')
+
+        # Top 5 retrieved images
+        for i, local_idx in enumerate(top_5):
+            retrieved_idx = valid_indices[local_idx]
+            similarity = sims[local_idx]
+
+            # Load retrieved image
+            retrieved_img, _ = dataset[retrieved_idx]
+            retrieved_img_tensor = retrieved_img.unsqueeze(0)
+
+            # Original image
+            ax = plt.subplot(2, 6, i + 2)
+            retrieved_vis = denorm_img(retrieved_img).permute(1, 2, 0).cpu().numpy()
+            ax.imshow(retrieved_vis)
+            ax.set_title(f'Top {i + 1}\nSim: {similarity:.3f}', fontsize=10)
+            ax.axis('off')
+
+            # Grad-CAM
+            ax = plt.subplot(2, 6, i + 8)
+            try:
+                cam = GradCAMPlusPlus(model_wrapper, target_layers=target_layers)
+                retrieved_input = retrieved_img_tensor.to(device)
+                retrieved_input.requires_grad = True
+                grayscale_cam = cam(input_tensor=retrieved_input, targets=None)
+                cam_image = show_cam_on_image(retrieved_vis, grayscale_cam[0], use_rgb=True)
+                ax.imshow(cam_image)
+            except Exception as e:
+                print(f"  Warning: Grad-CAM failed for result {i + 1}: {e}")
+                ax.imshow(retrieved_vis)
+            ax.set_title(f'Attention', fontsize=10)
+            ax.axis('off')
+
+        plt.suptitle(f'Visual Explanations for Category {cat} - What the model focuses on',
+                     fontsize=14, fontweight='bold')
+        plt.tight_layout()
+
+        output_path = f'results/explain/explanation_category_{cat}.png'
+        plt.savefig(output_path, dpi=150, bbox_inches='tight')
+        plt.close()
+        print(f"  ✓ Saved to {output_path}")
+
 
 def main(args):
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    print(f"Using device: {device}")
+    print(f"Using device: {device}\n")
 
-    # Load model (same as evaluate.py)
+    # Load model
+    print("Loading model...")
     checkpoint = torch.load(args.model_path, map_location=device)
     model_args = checkpoint.get('args', {})
+
     backbone = model_args.get('backbone', 'resnet50')
     embedding_size = model_args.get('embedding_size', 256)
+
+    print(f"  Backbone: {backbone}")
+    print(f"  Embedding size: {embedding_size}")
+
     model = EmbeddingNet(backbone=backbone, embedding_size=embedding_size).to(device)
     model.load_state_dict(checkpoint['model_state_dict'])
     model.eval()
 
-    # print("Model loaded:")
-    # print(model)
+    # Load dataset
+    print("\nLoading test dataset...")
+    test_transform = transforms.Compose([
+        transforms.Resize(256),
+        transforms.CenterCrop(224),
+        transforms.ToTensor(),
+        transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])
+    ])
 
-    # Setup GradCAMpp on backbone
-    cam_extractor = GradCAMpp(model.backbone, target_layer='7.0.conv3')
+    test_dataset = StanfordProductsDataset(
+        root_dir=args.data_dir,
+        split='test',
+        transform=test_transform
+    )
+    print(f"  Test samples: {len(test_dataset)}")
 
-    with torch.set_grad_enabled(True):
-        # Load small test batch for visualization
-        test_transform = transforms.Compose([
-            transforms.Resize(256),
-            transforms.CenterCrop(224),
-            transforms.ToTensor(),
-            transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])
-        ])
-        test_dataset = StanfordProductsDataset('data/Stanford_Online_Products', 'test', transform=test_transform)
-        test_loader = torch.utils.data.DataLoader(test_dataset, batch_size=args.batch_size, shuffle=True, num_workers=4)
-        torch.cuda.empty_cache();
-        gc.collect()
-        embeddings, product_ids, categories = extract_embeddings_with_metadata(model, test_loader, device)
+    # Extract embeddings
+    print("\nExtracting embeddings...")
+    embeddings, product_ids, categories, indices = extract_embeddings(
+        model, test_dataset, device, max_samples=args.max_samples
+    )
+    print(f"  Extracted {len(embeddings)} embeddings")
 
-    # Truncate for speed
-    N = 1000
-    embeddings = embeddings[:N]
-    product_ids = product_ids[:N]
-    categories = categories[:N]
-
-    #ensure results dir
-    os.makedirs('results/explain', exist_ok=True)
-
-    # Viz per category (like mode2)
-    unique_cats = np.unique(categories)
-    print("Unique categories found:", unique_cats)
-
-    # for cat in tqdm(unique_cats[:args.num_categories], desc="Generating explanations"):
-    for cat in unique_cats[:args.num_categories]:
-        cat_mask = categories == cat
-        cat_embs = embeddings[cat_mask]
-        if len(cat_embs) < 10:
-            print("jd")
-            continue
-
-
-        # Pick random query
-        query_idx = np.random.choice(np.where(cat_mask)[0])
-        query_emb = torch.from_numpy(cat_embs[0]).float().to(device)  # First as example
-
-        # Compute top-5 gallery (exclude same product)
-        gallery_embs = embeddings[~np.isin(product_ids, product_ids[query_idx])]  # Simple exclude
-        sims = computesimilarity(cat_embs[0], gallery_embs)
-        top_indices = np.argsort(sims)[-6:]  # Query + top5
-
-        fig, axes = plt.subplots(2, 6, figsize=(18, 6))
-        query_img = denorm_img(load_image_by_idx(test_dataset, query_idx)).permute(1,2,0).cpu().numpy()
-
-        # Query CAM (self-similarity proxy)
-        with torch.set_grad_enabled(True):
-            img_q = load_image_by_idx(test_dataset, query_idx).unsqueeze(0).to(device)
-            img_q.requires_grad_()  # Ensure the input tensor requires gradients
-            out = model(img_q)
-            proxy_score = F.cosine_similarity(out, query_emb.unsqueeze(0)).sum()
-            proxy_score.backward(retain_graph=True)
-            cams = cam_extractor(img_q, scores=None)
-        heatmap_q = cams[0].squeeze(0).cpu().sigmoid()
-        axes[0,0].imshow(query_img)
-        axes[0,0].imshow(heatmap_q, cmap='jet', alpha=0.5)
-        axes[0,0].set_title('Query (Self-Sim CAM)')
-        axes[0,0].axis('off')
-
-        # Top-5 retrievals + CAMs
-        for j, g_idx in enumerate(top_indices[1:]):  # Skip self
-            g_img = denorm_img(load_image_by_idx(test_dataset, g_idx)).permute(1,2,0).cpu().numpy()
-            img_g = load_image_by_idx(test_dataset, g_idx).unsqueeze(0).to(device)
-            with torch.enable_grad():
-                out_g = model(img_g)
-                proxy_score = F.cosine_similarity(out_g, query_emb.unsqueeze(0)).sum()
-                proxy_score.backward(retain_graph=True)
-            cams_g = cam_extractor(img_g, scores=None)
-            heatmap_g = cams_g[0].squeeze(0).cpu().sigmoid()
-            sim_val = sims[g_idx]
-            axes[0, j+1].imshow(g_img)
-            axes[0, j+1].imshow(heatmap_g, cmap='jet', alpha=0.5)
-            axes[0, j+1].set_title(f'Top{j+1} Sim:{sim_val:.3f}')
-            axes[0, j+1].axis('off')
-
-            # Pairwise comparison subplot (optional)
-            axes[1, j].imshow(query_img)
-            axes[1, j].axis('off')
-
-        plt.suptitle(f'Grad-CAM++ Explanations: Category {cat}')
-        plt.tight_layout()
-        output_path = f'results/explain/explanations_category_{cat}.png'
-        # tqdm.write(f"Saving explanation to: {output_path}")
-        print(f"Saving explanation to: {output_path}")
-        plt.savefig(output_path, dpi=150, bbox_inches='tight')
-        plt.close()
-
-    print("Explanations saved to results/explanations_category_*.png")
-
-def extract_embeddings_with_metadata(model, loader, device):
-    model.eval()
-
-    all_embs = []
-    all_pids = []
-    all_cats = []
-
-    torch.set_grad_enabled(False)
-
-    with torch.no_grad():
-        for images, labels in tqdm(loader, desc="Extracting embeddings"):
-            images = images.to(device)
-            embs = model(images)
-            if isinstance(embs, tuple):
-                embs = embs[0]
-
-            embs = embs.detach().cpu().numpy()
-            # store each embedding separately
-            for i in range(len(embs)):
-                all_embs.append(embs[i])        # (256,)
-                all_pids.append(labels[i].item())
-                all_cats.append(labels[i].item())   # replace with real category later
-
-    return (
-        np.array(all_embs),   # (N, 256)
-        np.array(all_pids),   # (N,)
-        np.array(all_cats)    # (N,)
+    # Generate visualizations
+    print("\nGenerating Grad-CAM explanations...")
+    visualize_explanations(
+        model, test_dataset, embeddings, product_ids, categories, indices,
+        num_categories=args.num_categories, device=device
     )
 
+    print(f"\n{'=' * 70}")
+    print("✓ Explanations generated successfully!")
+    print(f"  Output directory: results/explain/")
+    print(f"{'=' * 70}")
+
+
 if __name__ == '__main__':
-    parser = argparse.ArgumentParser()
-    parser.add_argument('--model_path', required=True, help='Path to best.pth')
-    parser.add_argument('--batch_size', type=int, default=32)
-    parser.add_argument('--num_categories', type=int, default=5, help='Categories to explain')
+    parser = argparse.ArgumentParser(description='Generate visual explanations for retrieval model')
+    parser.add_argument('--model_path', type=str, required=True,
+                        help='Path to trained model (.pth file)')
+    parser.add_argument('--data_dir', type=str, default='./data/Stanford_Online_Products',
+                        help='Path to dataset')
+    parser.add_argument('--num_categories', type=int, default=5,
+                        help='Number of categories to explain')
+    parser.add_argument('--max_samples', type=int, default=2000,
+                        help='Max samples to extract embeddings from')
+
     args = parser.parse_args()
     main(args)
