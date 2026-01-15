@@ -13,7 +13,7 @@ from datetime import datetime
 CONFIG = {
     'dataset': 'stanford',  # or 'fashionmnist'
     'batch_size': 64,
-    'epochs': 20,
+    'epochs': 10,
     'embedding_size': 128,
     'margin': 0.5,
     'lr': 0.0001,
