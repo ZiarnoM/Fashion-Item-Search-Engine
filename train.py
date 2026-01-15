@@ -1,24 +1,151 @@
 import torch
 import torch.nn as nn
 import torchvision
-from torchvision import transforms, datasets
-from torch.utils.data import DataLoader, random_split
-from torch.utils.tensorboard import SummaryWriter
-import torch.optim as optim
+from torchvision import transforms, datasets, models
+from torch.utils.data import DataLoader, Subset
+import torch.nn.functional as F
+import numpy as np
 from tqdm import tqdm
 import argparse
 import os
+import json
 from datetime import datetime
+import matplotlib.pyplot as plt
 
-# Triplet Loss
-from pytorch_metric_learning import losses, miners, distances
+from stanford_products_loader import StanfordProductsDataset
 
-# Import Stanford dataset loader
-from stanford_products_loader import create_stanford_loaders
+# Enable cudnn optimizations
+torch.backends.cudnn.benchmark = True
 
 
-# Convert grayscale to RGB (for Fashion-MNIST)
+class EmbeddingNet(nn.Module):
+    """Neural network that produces embeddings for images"""
+
+    def __init__(self, backbone='resnet18', embedding_size=128, pretrained=True):
+        super().__init__()
+
+        # Load backbone
+        if backbone == 'resnet18':
+            base_model = models.resnet18(pretrained=pretrained)
+            num_features = base_model.fc.in_features
+            self.backbone = nn.Sequential(*list(base_model.children())[:-1])
+        elif backbone == 'resnet50':
+            base_model = models.resnet50(pretrained=pretrained)
+            num_features = base_model.fc.in_features
+            self.backbone = nn.Sequential(*list(base_model.children())[:-1])
+        elif backbone == 'efficientnet_b0':
+            base_model = models.efficientnet_b0(pretrained=pretrained)
+            num_features = base_model.classifier[1].in_features
+            self.backbone = nn.Sequential(*list(base_model.children())[:-1])
+        elif backbone == 'mobilenet_v2':
+            base_model = models.mobilenet_v2(pretrained=pretrained)
+            num_features = base_model.classifier[1].in_features
+            self.backbone = base_model.features
+        else:
+            raise ValueError(f"Unknown backbone: {backbone}")
+
+        # Embedding head
+        self.embedding_head = nn.Sequential(
+            nn.Flatten(),
+            nn.Linear(num_features, 512),
+            nn.ReLU(),
+            nn.Dropout(0.2),
+            nn.Linear(512, embedding_size)
+        )
+
+        self.backbone_name = backbone
+
+    def forward(self, x):
+        features = self.backbone(x)
+        embeddings = self.embedding_head(features)
+        # L2 normalize embeddings
+        embeddings = F.normalize(embeddings, p=2, dim=1)
+        return embeddings
+
+
+class TripletLoss(nn.Module):
+    """Triplet loss for metric learning"""
+
+    def __init__(self, margin=0.5):
+        super().__init__()
+        self.margin = margin
+
+    def forward(self, anchor, positive, negative):
+        distance_positive = (anchor - positive).pow(2).sum(1)
+        distance_negative = (anchor - negative).pow(2).sum(1)
+        losses = F.relu(distance_positive - distance_negative + self.margin)
+        return losses.mean()
+
+
+def mine_hard_triplets(embeddings, labels, margin=0.5):
+    """
+    OPTIMIZED: Mine hard triplets using vectorized operations
+
+    Args:
+        embeddings: (batch_size, embedding_dim)
+        labels: (batch_size,)
+        margin: margin for semi-hard mining
+    """
+    batch_size = embeddings.size(0)
+
+    # Compute pairwise distances (batch_size, batch_size)
+    distances = torch.cdist(embeddings, embeddings, p=2)
+
+    # Create masks
+    labels_equal = labels.unsqueeze(0) == labels.unsqueeze(1)  # Same class
+    labels_not_equal = ~labels_equal  # Different class
+
+    # Mask out diagonal (distance to self)
+    mask_diagonal = torch.eye(batch_size, dtype=torch.bool, device=embeddings.device)
+    labels_equal = labels_equal & ~mask_diagonal
+
+    triplets = []
+
+    for i in range(batch_size):
+        # Positive: same class, not self
+        positive_mask = labels_equal[i]
+        if not positive_mask.any():
+            continue
+
+        # Negative: different class
+        negative_mask = labels_not_equal[i]
+        if not negative_mask.any():
+            continue
+
+        # Get distances for this anchor
+        anchor_positive_dists = distances[i][positive_mask]
+        anchor_negative_dists = distances[i][negative_mask]
+
+        # Hard positive: farthest positive
+        hardest_positive_idx = torch.argmax(anchor_positive_dists)
+        positive_idx = torch.where(positive_mask)[0][hardest_positive_idx]
+
+        # Semi-hard negative: closest negative that's still farther than positive + margin
+        hardest_positive_dist = anchor_positive_dists[hardest_positive_idx]
+
+        # Try to find semi-hard negative
+        semi_hard_negatives = anchor_negative_dists > hardest_positive_dist
+        semi_hard_negatives = semi_hard_negatives & (anchor_negative_dists < hardest_positive_dist + margin)
+
+        if semi_hard_negatives.any():
+            # Semi-hard negative exists: pick closest among them
+            semi_hard_dists = anchor_negative_dists.clone()
+            semi_hard_dists[~semi_hard_negatives] = float('inf')
+            negative_idx_in_subset = torch.argmin(semi_hard_dists)
+            negative_idx = torch.where(negative_mask)[0][negative_idx_in_subset]
+        else:
+            # Hard negative: closest negative overall
+            hardest_negative_idx = torch.argmin(anchor_negative_dists)
+            negative_idx = torch.where(negative_mask)[0][hardest_negative_idx]
+
+        triplets.append((i, positive_idx.item(), negative_idx.item()))
+
+    return triplets
+
+
 class RGBWrapper(torch.utils.data.Dataset):
+    """Wrapper to convert grayscale to RGB"""
+
     def __init__(self, dataset):
         self.dataset = dataset
 
@@ -27,462 +154,408 @@ class RGBWrapper(torch.utils.data.Dataset):
 
     def __getitem__(self, idx):
         img, label = self.dataset[idx]
-        if img.shape[0] == 1:  # Grayscale
+        if img.shape[0] == 1:
             img = img.repeat(3, 1, 1)
         return img, label
 
 
-class EmbeddingNet(nn.Module):
-    """Embedding network with pre-trained backbone"""
+def get_data_loaders(dataset_type='fashionmnist', batch_size=128, use_subset=False):
+    """Load and prepare data loaders with optimizations"""
 
-    def __init__(self, backbone='resnet50', embedding_size=128, dropout=0.3):
-        super().__init__()
-
-        if backbone == 'resnet50':
-            base_model = torchvision.models.resnet50(weights='IMAGENET1K_V1')
-            num_features = base_model.fc.in_features
-            self.backbone = nn.Sequential(*list(base_model.children())[:-1])
-        elif backbone == 'efficientnet':
-            base_model = torchvision.models.efficientnet_b0(weights='IMAGENET1K_V1')
-            num_features = base_model.classifier[1].in_features
-            self.backbone = nn.Sequential(*list(base_model.children())[:-1])
-        else:
-            raise ValueError(f"Unknown backbone: {backbone}")
-
-        # Improved embedding head with batch normalization
-        self.embedding = nn.Sequential(
-            nn.Flatten(),
-            nn.Linear(num_features, 512),
-            nn.BatchNorm1d(512),
-            nn.ReLU(),
-            nn.Dropout(dropout),
-            nn.Linear(512, embedding_size),
-            nn.BatchNorm1d(embedding_size)  # Add BN before normalization
-        )
-
-    def forward(self, x):
-        features = self.backbone(x)
-        embeddings = self.embedding(features)
-        # L2 normalize embeddings
-        embeddings = nn.functional.normalize(embeddings, p=2, dim=1)
-        return embeddings
-
-
-def get_data_loaders(batch_size=128, data_aug=True, dataset='fashionmnist'):
-    """Prepare data loaders with augmentation"""
-
-    if dataset == 'stanford':
+    if dataset_type == 'stanford':
         print("Loading Stanford Online Products dataset...")
-        return create_stanford_loaders(
+
+        # Data augmentation for training
+        train_transform = transforms.Compose([
+            transforms.Resize((256, 256)),
+            transforms.RandomResizedCrop(224, scale=(0.8, 1.0)),
+            transforms.RandomHorizontalFlip(),
+            transforms.ColorJitter(brightness=0.2, contrast=0.2, saturation=0.2),
+            transforms.RandomRotation(15),
+            transforms.ToTensor(),
+            transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])
+        ])
+
+        # Validation transform (no augmentation)
+        val_transform = transforms.Compose([
+            transforms.Resize((256, 256)),
+            transforms.CenterCrop(224),
+            transforms.ToTensor(),
+            transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])
+        ])
+
+        # Load datasets
+        train_dataset = StanfordProductsDataset(
             root_dir='./data/Stanford_Online_Products',
-            batch_size=batch_size,
-            num_workers=4
+            split='train',
+            transform=train_transform
         )
 
-    # Original Fashion-MNIST code
-    print("Loading Fashion-MNIST dataset...")
+        val_dataset = StanfordProductsDataset(
+            root_dir='./data/Stanford_Online_Products',
+            split='train',  # Use part of train for validation
+            transform=val_transform
+        )
 
-    if data_aug:
+        # Split train into train/val
+        train_size = int(0.9 * len(train_dataset))
+        val_size = len(train_dataset) - train_size
+
+        train_indices = list(range(train_size))
+        val_indices = list(range(train_size, len(train_dataset)))
+
+        train_dataset = Subset(train_dataset, train_indices)
+        val_dataset = Subset(val_dataset, val_indices)
+
+        print(f"Train size: {len(train_dataset)}")
+        print(f"Val size: {len(val_dataset)}")
+
+    else:  # fashionmnist
+        print("Loading Fashion-MNIST dataset...")
+
         train_transform = transforms.Compose([
             transforms.Resize((224, 224)),
             transforms.RandomHorizontalFlip(),
-            transforms.RandomRotation(10),
-            transforms.ColorJitter(brightness=0.2, contrast=0.2),
+            transforms.RandomRotation(15),
             transforms.ToTensor(),
             transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])
         ])
-    else:
-        train_transform = transforms.Compose([
+
+        val_transform = transforms.Compose([
             transforms.Resize((224, 224)),
             transforms.ToTensor(),
             transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])
         ])
 
-    test_transform = transforms.Compose([
-        transforms.Resize((224, 224)),
-        transforms.ToTensor(),
-        transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])
-    ])
+        traindata = datasets.FashionMNIST(
+            root='./data',
+            train=True,
+            download=True,
+            transform=train_transform
+        )
 
-    full_train = datasets.FashionMNIST(
-        root='./data',
-        train=True,
-        download=True,
-        transform=train_transform
+        valdata = datasets.FashionMNIST(
+            root='./data',
+            train=True,
+            download=True,
+            transform=val_transform
+        )
+
+        # Split train into train/val
+        train_size = int(0.9 * len(traindata))
+        val_size = len(traindata) - train_size
+
+        train_indices = list(range(train_size))
+        val_indices = list(range(train_size, len(traindata)))
+
+        traindata = Subset(traindata, train_indices)
+        valdata = Subset(valdata, val_indices)
+
+        # Wrap to convert to RGB
+        traindata = RGBWrapper(traindata)
+        valdata = RGBWrapper(valdata)
+
+        train_dataset = traindata
+        val_dataset = valdata
+
+    # Create data loaders with optimizations
+    train_loader = DataLoader(
+        train_dataset,
+        batch_size=batch_size,
+        shuffle=True,
+        num_workers=4,
+        pin_memory=True,
+        persistent_workers=True,  # Keep workers alive
+        prefetch_factor=2  # Prefetch batches
     )
-    full_train = RGBWrapper(full_train)
 
-    train_size = int(0.8 * len(full_train))
-    val_size = len(full_train) - train_size
-    train_data, val_data = random_split(full_train, [train_size, val_size])
-
-    test_data = datasets.FashionMNIST(
-        root='./data',
-        train=False,
-        download=True,
-        transform=test_transform
+    val_loader = DataLoader(
+        val_dataset,
+        batch_size=batch_size,
+        shuffle=False,
+        num_workers=4,
+        pin_memory=True,
+        persistent_workers=True,
+        prefetch_factor=2
     )
-    test_data = RGBWrapper(test_data)
 
-    train_loader = DataLoader(train_data, batch_size=batch_size, shuffle=True, num_workers=2, pin_memory=True)
-    val_loader = DataLoader(val_data, batch_size=batch_size, shuffle=False, num_workers=2, pin_memory=True)
-    test_loader = DataLoader(test_data, batch_size=batch_size, shuffle=False, num_workers=2, pin_memory=True)
-
-    return train_loader, val_loader, test_loader
+    return train_loader, val_loader
 
 
-def create_loss_function(loss_type='multi_similarity', margin=0.1):
-    """Create loss function based on type
-
-    Args:
-        loss_type: One of ['triplet', 'multi_similarity', 'ntxent', 'arcface']
-        margin: Margin for triplet loss
-    """
-    if loss_type == 'triplet':
-        # Standard triplet loss with smaller margin
-        return losses.TripletMarginLoss(margin=margin, distance=distances.CosineSimilarity())
-
-    elif loss_type == 'multi_similarity':
-        # Multi-Similarity Loss - better than triplet
-        return losses.MultiSimilarityLoss(alpha=2.0, beta=50, base=0.5)
-
-    elif loss_type == 'ntxent':
-        # NT-Xent (SimCLR loss) - contrastive learning
-        return losses.NTXentLoss(temperature=0.07)
-
-    elif loss_type == 'arcface':
-        # ArcFace - requires number of classes
-        raise NotImplementedError("ArcFace requires num_classes parameter")
-
-    else:
-        raise ValueError(f"Unknown loss type: {loss_type}")
-
-
-def train_epoch(model, loader, criterion, optimizer, device, miner=None, epoch=0, writer=None):
-    """Train for one epoch with detailed logging"""
+def train_epoch(model, train_loader, criterion, optimizer, device, scaler):
+    """Train for one epoch with mixed precision"""
     model.train()
     total_loss = 0
-    batch_losses = []
-    grad_norms = []
+    num_triplets = 0
 
-    pbar = tqdm(loader, desc='Training')
-    for batch_idx, (images, labels) in enumerate(pbar):
-        images, labels = images.to(device), labels.to(device)
+    pbar = tqdm(train_loader, desc='Training')
+    for images, labels in pbar:
+        images = images.to(device, non_blocking=True)
+        labels = labels.to(device, non_blocking=True)
 
-        optimizer.zero_grad()
-        embeddings = model(images)
+        optimizer.zero_grad(set_to_none=True)  # More efficient than zero_grad()
 
-        # Use hard triplet mining if available
-        if miner:
-            hard_pairs = miner(embeddings, labels)
-            loss = criterion(embeddings, labels, hard_pairs)
-        else:
-            loss = criterion(embeddings, labels)
+        # Mixed precision training
+        with torch.cuda.amp.autocast():
+            # Get embeddings
+            embeddings = model(images)
 
-        loss.backward()
+            # Mine hard triplets
+            triplets = mine_hard_triplets(embeddings, labels)
 
-        # Gradient clipping for stability
-        torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+            if len(triplets) == 0:
+                continue
 
-        # Calculate gradient norm
-        total_norm = 0
-        for p in model.parameters():
-            if p.grad is not None:
-                param_norm = p.grad.data.norm(2)
-                total_norm += param_norm.item() ** 2
-        total_norm = total_norm ** 0.5
-        grad_norms.append(total_norm)
+            # Extract anchors, positives, negatives
+            anchors = torch.stack([embeddings[t[0]] for t in triplets])
+            positives = torch.stack([embeddings[t[1]] for t in triplets])
+            negatives = torch.stack([embeddings[t[2]] for t in triplets])
 
-        optimizer.step()
+            # Compute loss
+            loss = criterion(anchors, positives, negatives)
 
-        batch_losses.append(loss.item())
+        # Backward pass with gradient scaling
+        scaler.scale(loss).backward()
+        scaler.step(optimizer)
+        scaler.update()
+
         total_loss += loss.item()
+        num_triplets += len(triplets)
 
-        # Log to tensorboard
-        if writer and batch_idx % 50 == 0:
-            global_step = epoch * len(loader) + batch_idx
-            writer.add_scalar('Batch/loss', loss.item(), global_step)
-            writer.add_scalar('Batch/grad_norm', total_norm, global_step)
+        pbar.set_postfix({'loss': f'{loss.item():.4f}', 'triplets': len(triplets)})
 
-            emb_mean = embeddings.mean().item()
-            emb_std = embeddings.std().item()
-            writer.add_scalar('Embeddings/mean', emb_mean, global_step)
-            writer.add_scalar('Embeddings/std', emb_std, global_step)
+    avg_loss = total_loss / len(train_loader)
+    avg_triplets = num_triplets / len(train_loader)
 
-        pbar.set_postfix({
-            'loss': f'{loss.item():.4f}',
-            'grad_norm': f'{total_norm:.2f}'
-        })
-
-    avg_grad_norm = sum(grad_norms) / len(grad_norms) if grad_norms else 0
-
-    return total_loss / len(loader), batch_losses, avg_grad_norm
+    return avg_loss, avg_triplets
 
 
 @torch.no_grad()
-def validate(model, loader, criterion, device, epoch=0, writer=None):
-    """Validate model with detailed metrics"""
+def validate(model, val_loader, criterion, device):
+    """Validate model with mixed precision"""
     model.eval()
     total_loss = 0
+    num_triplets = 0
 
-    all_embeddings = []
-    all_labels = []
+    with torch.cuda.amp.autocast():
+        for images, labels in tqdm(val_loader, desc='Validating'):
+            images = images.to(device, non_blocking=True)
+            labels = labels.to(device, non_blocking=True)
 
-    for images, labels in tqdm(loader, desc='Validation'):
-        images, labels = images.to(device), labels.to(device)
-        embeddings = model(images)
-        loss = criterion(embeddings, labels)
-        total_loss += loss.item()
+            embeddings = model(images)
 
-        all_embeddings.append(embeddings.cpu())
-        all_labels.append(labels.cpu())
+            triplets = mine_hard_triplets(embeddings, labels)
 
-    # Compute embedding statistics
-    all_embeddings = torch.cat(all_embeddings, dim=0)
-    emb_mean = all_embeddings.mean().item()
-    emb_std = all_embeddings.std().item()
-    emb_l2_norm = torch.norm(all_embeddings, p=2, dim=1).mean().item()
+            if len(triplets) == 0:
+                continue
 
-    if writer:
-        writer.add_scalar('Validation/embedding_mean', emb_mean, epoch)
-        writer.add_scalar('Validation/embedding_std', emb_std, epoch)
-        writer.add_scalar('Validation/embedding_l2_norm', emb_l2_norm, epoch)
-        writer.add_histogram('Validation/embeddings', all_embeddings, epoch)
+            anchors = torch.stack([embeddings[t[0]] for t in triplets])
+            positives = torch.stack([embeddings[t[1]] for t in triplets])
+            negatives = torch.stack([embeddings[t[2]] for t in triplets])
 
-    return total_loss / len(loader)
+            loss = criterion(anchors, positives, negatives)
+
+            total_loss += loss.item()
+            num_triplets += len(triplets)
+
+    avg_loss = total_loss / len(val_loader) if len(val_loader) > 0 else 0
+    avg_triplets = num_triplets / len(val_loader) if len(val_loader) > 0 else 0
+
+    return avg_loss, avg_triplets
 
 
-def main(args):
+def plot_training_curves(history, save_path):
+    """Plot and save training curves"""
+    fig, axes = plt.subplots(1, 2, figsize=(15, 5))
+
+    # Loss
+    axes[0].plot(history['train_loss'], label='Train Loss', marker='o')
+    axes[0].plot(history['val_loss'], label='Val Loss', marker='s')
+    axes[0].set_xlabel('Epoch')
+    axes[0].set_ylabel('Loss')
+    axes[0].set_title('Training and Validation Loss')
+    axes[0].legend()
+    axes[0].grid(True)
+
+    # Triplets per batch
+    axes[1].plot(history['train_triplets'], label='Train Triplets', marker='o')
+    axes[1].plot(history['val_triplets'], label='Val Triplets', marker='s')
+    axes[1].set_xlabel('Epoch')
+    axes[1].set_ylabel('Avg Triplets per Batch')
+    axes[1].set_title('Average Triplets per Batch')
+    axes[1].legend()
+    axes[1].grid(True)
+
+    plt.tight_layout()
+    plt.savefig(save_path, dpi=150, bbox_inches='tight')
+    print(f"✓ Saved training curves to {save_path}")
+    plt.close()
+
+
+def train_model(args):
+    """Main training function"""
+
     # Setup
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     print(f"Using device: {device}")
 
-    # Create directories
-    os.makedirs('models', exist_ok=True)
+    # Create results directory
     os.makedirs('results', exist_ok=True)
+    os.makedirs('checkpoints', exist_ok=True)
 
-    # Tensorboard
-    timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-    writer = SummaryWriter(f'runs/{args.dataset}_{args.backbone}_{args.loss_type}_{timestamp}')
-
-    # Data
-    print("Loading data...")
-    train_loader, val_loader, test_loader = get_data_loaders(
-        batch_size=args.batch_size,
-        data_aug=args.augmentation,
-        dataset=args.dataset
+    # Load data
+    print(f"\nLoading {args.dataset} dataset...")
+    train_loader, val_loader = get_data_loaders(
+        dataset_type=args.dataset,
+        batch_size=args.batch_size
     )
 
-    # Model
-    print(f"Creating model with {args.backbone} backbone...")
+    # Create model
+    print(f"\nCreating model with backbone: {args.backbone}")
     model = EmbeddingNet(
         backbone=args.backbone,
         embedding_size=args.embedding_size,
-        dropout=args.dropout
+        pretrained=True
     ).to(device)
 
-    # Count parameters
-    total_params = sum(p.numel() for p in model.parameters())
-    trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
-    print(f"Total parameters: {total_params:,}")
-    print(f"Trainable parameters: {trainable_params:,}")
+    print(f"Total parameters: {sum(p.numel() for p in model.parameters()):,}")
+    print(f"Trainable parameters: {sum(p.numel() for p in model.parameters() if p.requires_grad):,}")
 
     # Loss and optimizer
-    print(f"Using {args.loss_type} loss")
-    criterion = create_loss_function(loss_type=args.loss_type, margin=args.margin)
+    criterion = TripletLoss(margin=args.margin)
+    optimizer = torch.optim.Adam(model.parameters(), lr=args.lr, weight_decay=1e-5)
 
-    # Miner for hard negative mining
-    if args.hard_mining:
-        print("Using hard negative mining")
-        miner = miners.MultiSimilarityMiner(epsilon=0.1)
-    else:
-        miner = None
-
-    # Optimizer with weight decay
-    optimizer = optim.AdamW(
-        model.parameters(),
-        lr=args.lr,
-        weight_decay=args.weight_decay
+    # Learning rate scheduler
+    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+        optimizer, mode='min', factor=0.5, patience=3, verbose=True
     )
 
-    # Improved learning rate scheduler
-    if args.scheduler == 'cosine':
-        scheduler = optim.lr_scheduler.CosineAnnealingLR(
-            optimizer,
-            T_max=args.epochs,
-            eta_min=args.lr / 100
-        )
-    elif args.scheduler == 'plateau':
-        scheduler = optim.lr_scheduler.ReduceLROnPlateau(
-            optimizer,
-            mode='min',
-            patience=3,
-            factor=0.5,
-            min_lr=args.lr / 100
-        )
-    else:
-        scheduler = None
+    # Mixed precision scaler
+    scaler = torch.cuda.amp.GradScaler()
 
-    # Training loop
-    best_val_loss = float('inf')
-    patience_counter = 0
-
+    # Training history
     history = {
         'train_loss': [],
         'val_loss': [],
-        'learning_rate': [],
-        'grad_norm': [],
-        'epoch': []
+        'train_triplets': [],
+        'val_triplets': []
     }
 
-    print(f"\n{'=' * 70}")
-    print(f"Training Configuration:")
-    print(f"{'=' * 70}")
-    print(f"  Backbone:        {args.backbone}")
-    print(f"  Embedding size:  {args.embedding_size}")
-    print(f"  Loss function:   {args.loss_type}")
-    print(f"  Batch size:      {args.batch_size}")
-    print(f"  Learning rate:   {args.lr}")
-    print(f"  Weight decay:    {args.weight_decay}")
-    print(f"  Scheduler:       {args.scheduler}")
-    print(f"  Epochs:          {args.epochs}")
-    print(f"  Hard mining:     {args.hard_mining}")
-    print(f"{'=' * 70}\n")
+    best_val_loss = float('inf')
 
-    print(f"Starting training for {args.epochs} epochs...")
+    # Training loop
+    print(f"\nStarting training for {args.epochs} epochs...")
+    print("=" * 60)
+
     for epoch in range(args.epochs):
         print(f"\nEpoch {epoch + 1}/{args.epochs}")
+        print("-" * 60)
 
         # Train
-        train_loss, batch_losses, grad_norm = train_epoch(
-            model, train_loader, criterion, optimizer, device, miner,
-            epoch=epoch, writer=writer
+        train_loss, train_triplets = train_epoch(
+            model, train_loader, criterion, optimizer, device, scaler
         )
 
         # Validate
-        val_loss = validate(model, val_loader, criterion, device, epoch=epoch, writer=writer)
+        val_loss, val_triplets = validate(
+            model, val_loader, criterion, device
+        )
 
-        # Scheduler step
-        if args.scheduler == 'cosine':
-            scheduler.step()
-        elif args.scheduler == 'plateau':
-            scheduler.step(val_loss)
+        # Update scheduler
+        scheduler.step(val_loss)
 
-        current_lr = optimizer.param_groups[0]['lr']
-
-        # Store history
+        # Record history
         history['train_loss'].append(train_loss)
         history['val_loss'].append(val_loss)
-        history['learning_rate'].append(current_lr)
-        history['grad_norm'].append(grad_norm)
-        history['epoch'].append(epoch)
+        history['train_triplets'].append(train_triplets)
+        history['val_triplets'].append(val_triplets)
 
-        # Log to tensorboard
-        writer.add_scalar('Loss/train', train_loss, epoch)
-        writer.add_scalar('Loss/val', val_loss, epoch)
-        writer.add_scalar('Learning_rate', current_lr, epoch)
-        writer.add_scalar('Training/grad_norm', grad_norm, epoch)
-
-        import numpy as np
-        writer.add_histogram('Training/batch_losses', np.array(batch_losses), epoch)
-
-        print(f"Train Loss: {train_loss:.4f}, Val Loss: {val_loss:.4f}, "
-              f"LR: {current_lr:.6f}, Grad Norm: {grad_norm:.2f}")
+        # Print epoch summary
+        print(f"\nEpoch {epoch + 1} Summary:")
+        print(f"  Train Loss: {train_loss:.4f} | Val Loss: {val_loss:.4f}")
+        print(f"  Train Triplets: {train_triplets:.1f} | Val Triplets: {val_triplets:.1f}")
+        print(f"  Learning Rate: {optimizer.param_groups[0]['lr']:.6f}")
 
         # Save best model
         if val_loss < best_val_loss:
             best_val_loss = val_loss
-            patience_counter = 0
-            save_path = f'models/{args.dataset}_{args.backbone}_{args.loss_type}_best.pth'
+            model_path = f"checkpoints/{args.dataset}_{args.backbone}_best.pth"
             torch.save({
                 'epoch': epoch,
                 'model_state_dict': model.state_dict(),
                 'optimizer_state_dict': optimizer.state_dict(),
                 'val_loss': val_loss,
-                'args': vars(args),
-                'history': history
-            }, save_path)
-            print(f"✓ Saved best model to {save_path}")
-        else:
-            patience_counter += 1
-            print(f"No improvement for {patience_counter} epoch(s)")
+                'args': vars(args)
+            }, model_path)
+            print(f"  ✓ Saved best model to {model_path}")
 
-        # Early stopping
-        if patience_counter >= args.patience:
-            print(f"\n⚠ Early stopping triggered after {epoch + 1} epochs")
-            break
+        # Save checkpoint every N epochs
+        if (epoch + 1) % 5 == 0:
+            checkpoint_path = f"checkpoints/{args.dataset}_{args.backbone}_epoch{epoch + 1}.pth"
+            torch.save({
+                'epoch': epoch,
+                'model_state_dict': model.state_dict(),
+                'optimizer_state_dict': optimizer.state_dict(),
+                'val_loss': val_loss,
+                'args': vars(args)
+            }, checkpoint_path)
+            print(f"  ✓ Saved checkpoint to {checkpoint_path}")
 
     # Save final model
-    final_path = f'models/{args.dataset}_{args.backbone}_{args.loss_type}_final.pth'
+    final_path = f"checkpoints/{args.dataset}_{args.backbone}_final.pth"
     torch.save({
-        'epoch': epoch,
+        'epoch': args.epochs - 1,
         'model_state_dict': model.state_dict(),
         'optimizer_state_dict': optimizer.state_dict(),
-        'val_loss': val_loss,
+        'val_loss': history['val_loss'][-1],
         'args': vars(args),
         'history': history
     }, final_path)
-    print(f"✓ Saved final model to {final_path}")
+    print(f"\n✓ Saved final model to {final_path}")
 
     # Save training history
-    import json
-    history_path = f'results/{args.dataset}_{args.backbone}_{args.loss_type}_history.json'
+    history_path = f"results/{args.dataset}_{args.backbone}_history.json"
     with open(history_path, 'w') as f:
         json.dump(history, f, indent=2)
     print(f"✓ Saved training history to {history_path}")
 
-    writer.close()
-    print(f"\n{'=' * 70}")
-    print(f"✓ Training completed!")
-    print(f"  Best validation loss: {best_val_loss:.4f}")
-    print(f"  Total epochs: {epoch + 1}")
-    print(f"{'=' * 70}\n")
+    # Plot training curves
+    plot_path = f"results/{args.dataset}_{args.backbone}_training_curves.png"
+    plot_training_curves(history, plot_path)
+
+    print("\n" + "=" * 60)
+    print("✓ TRAINING COMPLETED!")
+    print(f"Best validation loss: {best_val_loss:.4f}")
+    print("=" * 60)
+
+    return final_path
 
 
 if __name__ == '__main__':
-    parser = argparse.ArgumentParser(description='Train metric learning model')
-
-    # Model architecture
-    parser.add_argument('--backbone', type=str, default='resnet50',
-                        choices=['resnet50', 'efficientnet'],
-                        help='Backbone architecture')
-    parser.add_argument('--embedding_size', type=int, default=256,
-                        help='Embedding dimension (increased from 128)')
-    parser.add_argument('--dropout', type=float, default=0.3,
-                        help='Dropout rate')
-
-    # Loss function
-    parser.add_argument('--loss_type', type=str, default='multi_similarity',
-                        choices=['triplet', 'multi_similarity', 'ntxent'],
-                        help='Loss function to use')
-    parser.add_argument('--margin', type=float, default=0.1,
-                        help='Margin for triplet loss (reduced from 0.5)')
-    parser.add_argument('--hard_mining', action='store_true', default=True,
-                        help='Use hard negative mining')
-
-    # Training hyperparameters
-    parser.add_argument('--batch_size', type=int, default=128,
-                        help='Batch size')
-    parser.add_argument('--epochs', type=int, default=30,
-                        help='Number of epochs (increased from 20)')
-    parser.add_argument('--lr', type=float, default=0.0001,
-                        help='Learning rate (reduced from 0.0005)')
-    parser.add_argument('--weight_decay', type=float, default=1e-4,
-                        help='Weight decay for regularization')
-    parser.add_argument('--patience', type=int, default=8,
-                        help='Early stopping patience (increased from 5)')
-
-    # Scheduler
-    parser.add_argument('--scheduler', type=str, default='cosine',
-                        choices=['cosine', 'plateau', 'none'],
-                        help='Learning rate scheduler')
+    parser = argparse.ArgumentParser(description='Train image similarity model')
 
     # Data
-    parser.add_argument('--dataset', type=str, default='stanford',
+    parser.add_argument('--dataset', type=str, default='fashionmnist',
                         choices=['fashionmnist', 'stanford'],
                         help='Dataset to use')
-    parser.add_argument('--augmentation', action='store_true', default=True,
-                        help='Use data augmentation')
+    parser.add_argument('--batch_size', type=int, default=128,
+                        help='Batch size for training')
+
+    # Model
+    parser.add_argument('--backbone', type=str, default='resnet18',
+                        choices=['resnet18', 'resnet50', 'efficientnet_b0', 'mobilenet_v2'],
+                        help='Backbone architecture')
+    parser.add_argument('--embedding_size', type=int, default=128,
+                        help='Size of embedding vector')
+
+    # Training
+    parser.add_argument('--epochs', type=int, default=20,
+                        help='Number of epochs to train')
+    parser.add_argument('--lr', type=float, default=0.0001,
+                        help='Learning rate')
+    parser.add_argument('--margin', type=float, default=0.5,
+                        help='Margin for triplet loss')
 
     args = parser.parse_args()
-    main(args)
+
+    train_model(args)
