@@ -395,7 +395,7 @@ def plot_training_curves(history, save_path):
     axes[1].grid(True)
 
     # Learning Rate
-    axes[2].plot(history['learning_rate'], label='Learning Rate', marker='o', color='purple')
+    axes[2].plot(history['learning_rates'], label='Learning Rate', marker='o', color='purple')
     axes[2].set_xlabel('Epoch')
     axes[2].set_ylabel('Learning Rate')
     axes[2].set_title('Learning Rate Schedule')
