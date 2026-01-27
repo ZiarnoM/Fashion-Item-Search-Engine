@@ -3,6 +3,7 @@ import torch.nn as nn
 import torchvision
 from torchvision import transforms, datasets, models
 from torch.utils.data import DataLoader, Subset
+from torch.utils.tensorboard import SummaryWriter
 import torch.nn.functional as F
 import numpy as np
 from tqdm import tqdm
@@ -79,7 +80,7 @@ class TripletLoss(nn.Module):
 
 def mine_hard_triplets(embeddings, labels, margin=0.5):
     """
-    OPTIMIZED: Mine hard triplets using vectorized operations
+    Mine hard triplets using vectorized operations
 
     Args:
         embeddings: (batch_size, embedding_dim)
@@ -92,8 +93,8 @@ def mine_hard_triplets(embeddings, labels, margin=0.5):
     distances = torch.cdist(embeddings, embeddings, p=2)
 
     # Create masks
-    labels_equal = labels.unsqueeze(0) == labels.unsqueeze(1)  # Same class
-    labels_not_equal = ~labels_equal  # Different class
+    labels_equal = labels.unsqueeze(0) == labels.unsqueeze(1)
+    labels_not_equal = ~labels_equal
 
     # Mask out diagonal (distance to self)
     mask_diagonal = torch.eye(batch_size, dtype=torch.bool, device=embeddings.device)
@@ -193,7 +194,7 @@ def get_data_loaders(dataset_type='fashionmnist', batch_size=128, use_subset=Fal
 
         val_dataset = StanfordProductsDataset(
             root_dir='./data/Stanford_Online_Products',
-            split='train',  # Use part of train for validation
+            split='train',
             transform=val_transform
         )
 
@@ -282,7 +283,7 @@ def get_data_loaders(dataset_type='fashionmnist', batch_size=128, use_subset=Fal
     return train_loader, val_loader
 
 
-def train_epoch(model, train_loader, criterion, optimizer, device, scaler):
+def train_epoch(model, train_loader, criterion, optimizer, device, scaler, writer=None, epoch=0):
     """Train for one epoch with mixed precision"""
     model.train()
     total_loss = 0
@@ -293,11 +294,10 @@ def train_epoch(model, train_loader, criterion, optimizer, device, scaler):
         images = images.to(device, non_blocking=True)
         labels = labels.to(device, non_blocking=True)
 
-        optimizer.zero_grad(set_to_none=True)  # More efficient than zero_grad()
+        optimizer.zero_grad(set_to_none=True)
 
         # Mixed precision training
         with torch.cuda.amp.autocast():
-            # Get embeddings
             embeddings = model(images)
 
             # Mine hard triplets
@@ -306,12 +306,10 @@ def train_epoch(model, train_loader, criterion, optimizer, device, scaler):
             if len(triplets) == 0:
                 continue
 
-            # Extract anchors, positives, negatives
             anchors = torch.stack([embeddings[t[0]] for t in triplets])
             positives = torch.stack([embeddings[t[1]] for t in triplets])
             negatives = torch.stack([embeddings[t[2]] for t in triplets])
 
-            # Compute loss
             loss = criterion(anchors, positives, negatives)
 
         # Backward pass with gradient scaling
@@ -327,11 +325,16 @@ def train_epoch(model, train_loader, criterion, optimizer, device, scaler):
     avg_loss = total_loss / len(train_loader)
     avg_triplets = num_triplets / len(train_loader)
 
+    # Log to TensorBoard
+    if writer is not None:
+        writer.add_scalar('Loss/train', avg_loss, epoch)
+        writer.add_scalar('Triplets/train', avg_triplets, epoch)
+
     return avg_loss, avg_triplets
 
 
 @torch.no_grad()
-def validate(model, val_loader, criterion, device):
+def validate(model, val_loader, criterion, device, writer=None, epoch=0):
     """Validate model with mixed precision"""
     model.eval()
     total_loss = 0
@@ -361,12 +364,17 @@ def validate(model, val_loader, criterion, device):
     avg_loss = total_loss / len(val_loader) if len(val_loader) > 0 else 0
     avg_triplets = num_triplets / len(val_loader) if len(val_loader) > 0 else 0
 
+    # Log to TensorBoard
+    if writer is not None:
+        writer.add_scalar('Loss/val', avg_loss, epoch)
+        writer.add_scalar('Triplets/val', avg_triplets, epoch)
+
     return avg_loss, avg_triplets
 
 
 def plot_training_curves(history, save_path):
     """Plot and save training curves"""
-    fig, axes = plt.subplots(1, 2, figsize=(15, 5))
+    fig, axes = plt.subplots(1, 3, figsize=(18, 5))
 
     # Loss
     axes[0].plot(history['train_loss'], label='Train Loss', marker='o')
@@ -385,6 +393,15 @@ def plot_training_curves(history, save_path):
     axes[1].set_title('Average Triplets per Batch')
     axes[1].legend()
     axes[1].grid(True)
+
+    # Learning Rate
+    axes[2].plot(history['learning_rate'], label='Learning Rate', marker='o', color='purple')
+    axes[2].set_xlabel('Epoch')
+    axes[2].set_ylabel('Learning Rate')
+    axes[2].set_title('Learning Rate Schedule')
+    axes[2].set_yscale('log')
+    axes[2].legend()
+    axes[2].grid(True)
 
     plt.tight_layout()
     plt.savefig(save_path, dpi=150, bbox_inches='tight')
@@ -412,10 +429,12 @@ def train_model(args):
 
     # Create model
     print(f"\nCreating model with backbone: {args.backbone}")
+    pretrained = not args.from_scratch
+    print(f"Using pretrained weights: {pretrained}")
     model = EmbeddingNet(
         backbone=args.backbone,
         embedding_size=args.embedding_size,
-        pretrained=not args.from_scratch
+        pretrained=pretrained
     ).to(device)
 
     print(f"Total parameters: {sum(p.numel() for p in model.parameters()):,}")
@@ -430,6 +449,14 @@ def train_model(args):
         optimizer, mode='min', factor=0.5, patience=3
     )
 
+    # TensorBoard writer
+    run_name = f"{args.dataset}_{args.backbone}"
+    if args.from_scratch:
+        run_name += "_scratch"
+    run_name += f"_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+    writer = SummaryWriter(f'runs/{run_name}')
+    print(f"TensorBoard logging to: runs/{run_name}")
+
     # Mixed precision scaler
     scaler = torch.cuda.amp.GradScaler()
 
@@ -438,7 +465,8 @@ def train_model(args):
         'train_loss': [],
         'val_loss': [],
         'train_triplets': [],
-        'val_triplets': []
+        'val_triplets': [],
+        'learning_rates': []
     }
 
     best_val_loss = float('inf')
@@ -453,22 +481,27 @@ def train_model(args):
 
         # Train
         train_loss, train_triplets = train_epoch(
-            model, train_loader, criterion, optimizer, device, scaler
+            model, train_loader, criterion, optimizer, device, scaler, writer, epoch
         )
 
         # Validate
         val_loss, val_triplets = validate(
-            model, val_loader, criterion, device
+            model, val_loader, criterion, device, writer, epoch
         )
 
         # Update scheduler
         scheduler.step(val_loss)
+
+        # Log learning rate to TensorBoard
+        current_lr = optimizer.param_groups[0]['lr']
+        writer.add_scalar('Learning_Rate', current_lr, epoch)
 
         # Record history
         history['train_loss'].append(train_loss)
         history['val_loss'].append(val_loss)
         history['train_triplets'].append(train_triplets)
         history['val_triplets'].append(val_triplets)
+        history['learning_rates'].append(optimizer.param_groups[0]['lr'])
 
         # Print epoch summary
         print(f"\nEpoch {epoch + 1} Summary:")
@@ -523,6 +556,10 @@ def train_model(args):
     plot_path = f"results/{args.dataset}_{args.backbone}_training_curves.png"
     plot_training_curves(history, plot_path)
 
+    # Close TensorBoard writer
+    writer.close()
+    print(f"✓ Closed TensorBoard writer")
+
     print("\n" + "=" * 60)
     print("✓ TRAINING COMPLETED!")
     print(f"Best validation loss: {best_val_loss:.4f}")
@@ -535,7 +572,7 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='Train image similarity model')
 
     # Data
-    parser.add_argument('--dataset', type=str, default='fashionmnist',
+    parser.add_argument('--dataset', type=str, default='stanford',
                         choices=['fashionmnist', 'stanford'],
                         help='Dataset to use')
     parser.add_argument('--batch_size', type=int, default=128,
@@ -549,14 +586,14 @@ if __name__ == '__main__':
                         help='Size of embedding vector')
 
     # Training
-    parser.add_argument('--from_scratch', action='store_true',
-                        help='Train from scratch instead of using pretrained weights')
     parser.add_argument('--epochs', type=int, default=20,
                         help='Number of epochs to train')
     parser.add_argument('--lr', type=float, default=0.0001,
                         help='Learning rate')
     parser.add_argument('--margin', type=float, default=0.5,
                         help='Margin for triplet loss')
+    parser.add_argument('--from_scratch', action='store_true',
+                        help='Train from scratch (no pretrained weights)')
 
     args = parser.parse_args()
 
