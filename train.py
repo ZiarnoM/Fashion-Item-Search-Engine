@@ -415,7 +415,7 @@ def train_model(args):
     model = EmbeddingNet(
         backbone=args.backbone,
         embedding_size=args.embedding_size,
-        pretrained=True
+        pretrained=not args.from_scratch
     ).to(device)
 
     print(f"Total parameters: {sum(p.numel() for p in model.parameters()):,}")
@@ -549,6 +549,8 @@ if __name__ == '__main__':
                         help='Size of embedding vector')
 
     # Training
+    parser.add_argument('--from_scratch', action='store_true',
+                        help='Train from scratch instead of using pretrained weights')
     parser.add_argument('--epochs', type=int, default=20,
                         help='Number of epochs to train')
     parser.add_argument('--lr', type=float, default=0.0001,
