@@ -129,6 +129,7 @@ Output Embedding (128-dim unit vector)
 ```
 
 **Parameters**: 11,496,060  
+**Size of final file**: 132MB
 
 #### Model 2: ResNet50
 ```
@@ -151,6 +152,7 @@ Output Embedding (128-dim unit vector)
 ```
 
 **Parameters**: 24,624,124  
+**Final model size** : 283MB
 
 #### Model 3: EfficientNet-B0 (Best Model) 
 ```
@@ -174,6 +176,7 @@ Output Embedding (128-dim unit vector)
 ```
 
 **Parameters**: 4,729,084  
+**Final model size** : 55MB
 **Winner**:  Best accuracy with fewest parameters
 
 ### Architecture Diagram
@@ -270,28 +273,19 @@ where:
 - **Margin-based**: Enforces minimum separation between similar/dissimilar pairs
 - **Proven effectiveness**: State-of-the-art for image retrieval tasks
 
-[//]: # (### Hyperparameters)
+### Hyperparameters
 
-[//]: # ()
-[//]: # (| Parameter | Value | Justification |)
 
-[//]: # (|-----------|-------|---------------|)
-
-[//]: # (| **Learning Rate** | 0.0001 | Balanced convergence speed with stability for fine-tuning pre-trained models |)
-
-[//]: # (| **Batch Size** | 64 | Maximum size fitting in GPU memory while maintaining diverse triplets |)
-
-[//]: # (| **Epochs** | 10 | Validation loss plateaued after 8-10 epochs |)
-
-[//]: # (| **Embedding Size** | 128 | Balance between expressiveness and computational efficiency |)
-
-[//]: # (| **Margin** | 0.5 | Standard value for triplet loss, provides good separation |)
-
-[//]: # (| **Weight Decay** | 1e-5 | Regularization to prevent overfitting |)
-
-[//]: # (| **Optimizer** | Adam | Adaptive learning rates, works well for fine-tuning |)
-
-[//]: # (| **LR Scheduler** | ReduceLROnPlateau | Reduce LR by 0.5× when val loss plateaus for 3 epochs |)
+| Parameter | Value | Justification |
+|-----------|-------|---------------|
+| **Learning Rate** | 0.0001 | Balanced convergence speed with stability for fine-tuning pre-trained models |
+| **Batch Size** | 64 | Maximum size fitting in GPU memory while maintaining diverse triplets |
+| **Epochs** | 10 | Validation loss plateaued after 8-10 epochs |
+| **Embedding Size** | 128 | Balance between expressiveness and computational efficiency |
+| **Margin** | 0.5 | Standard value for triplet loss, provides good separation |
+| **Weight Decay** | 1e-5 | Regularization to prevent overfitting |
+| **Optimizer** | Adam | Adaptive learning rates, works well for fine-tuning |
+| **LR Scheduler** | ReduceLROnPlateau | Reduce LR by 0.5× when val loss plateaus for 3 epochs |
 
 ### Data Augmentation (+1 point)
 
@@ -397,6 +391,8 @@ I tracked the following metrics during training:
 
 ![Training Curves](results/stanford_efficientnet_b0_training_curves.png)
 ![Training comparison](results/report/model_trainig_comparison.png)
+
+
 **Figure**: Training and validation loss curves for EfficientNet-B0, showing convergence after 10. 
 
 
@@ -409,6 +405,8 @@ I tracked the following metrics during training:
 | ResNet50 | 20 min | 14 min | 34 min | ~2.0 min |
 
 **Hardware**: NVIDIA RTX 3060 (12GB VRAM)
+
+Different machines on vast.ai so other component varies.
 
 ### Inference Time
 - **Single image embedding**: ~5ms on GPU
@@ -525,16 +523,21 @@ Full requirements in `requirements.txt`.
 ### MLOps Tools
 
 1. **TensorBoard**: Training visualization
+
    - Loss curves
    - Learning rate schedule
    - Embedding projections
    - Accessible at Vast.ai instance
+![TensorBoard](results/report/tensorboard2.png)
 
 2. **Gradio**: Interactive web interface
+
    - Upload query image
    - View top-K similar products
    - Real-time inference
    - Shareable demo link
+   
+![Gradio Interface](results/report/demo.png)
 
 ---
 
@@ -627,7 +630,7 @@ pip install -r requirements.txt
 | **Problem** | Search Engine                                   | 2 |
 | **Model - Base** | Transfer Learning (ImageNet->Metric Learning)   | 1 |
 | **Model - Additional** | 2 additional architectures (ResNet18, ResNet50) | +2 |
-| **Model - Non-trivial** | Metric Learning (Triplet Loss + Mining)         | +1 |
+| **Model - Non-trivial** | Metric Learning (Triplet Loss + Hard Mining)    | +1 |
 | **Dataset** | Evaluation on 10,000+ photos                    | +1 |
 | **Training** | Data Augmentation                               | +1 |
 | **Training** | Adaptive Hyperparameters (ReduceLROnPlateau)    | +1 |
