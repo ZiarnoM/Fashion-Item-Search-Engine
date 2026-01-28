@@ -1,0 +1,22 @@
+{
+  "model": "checkpoints/stanford_efficientnet_b0_best.pth",
+  "dataset": "stanford",
+  "backbone": "efficientnet_b0",
+  "embedding_size": 128,
+  "test_samples": 60502,
+  "num_unique_products": 11316,
+  "num_categories": 12,
+  "category_metrics": {
+    "recall@1": 0.605765098674424,
+    "recall@5": 0.8243363855740307,
+    "recall@10": 0.8877888334269941,
+    "recall@20": 0.9340352385045122,
+    "map@10": 0.6543657572201886
+  },
+  "total_params": 4729084,
+  "embedding_stats": {
+    "mean": 0.0016841026954352856,
+    "std": 0.08837229758501053,
+    "l2_norm": 1.0
+  }
+}

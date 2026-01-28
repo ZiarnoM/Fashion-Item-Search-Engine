@@ -1,0 +1,9 @@
+{
+  "name": "Stanford Online Products",
+  "train_size": 53516,
+  "val_size": 6035,
+  "test_size": 60502,
+  "num_classes": 11318,
+  "num_train_classes": 10186,
+  "num_test_classes": 11316
+}

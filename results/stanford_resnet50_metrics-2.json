@@ -1,0 +1,22 @@
+{
+  "model": "checkpoints/stanford_resnet50_best.pth",
+  "dataset": "stanford",
+  "backbone": "resnet50",
+  "embedding_size": 128,
+  "test_samples": 60502,
+  "num_unique_products": 11316,
+  "num_categories": 12,
+  "category_metrics": {
+    "recall@1": 0.21260454199861162,
+    "recall@5": 0.5297510826088394,
+    "recall@10": 0.7031172523222373,
+    "recall@20": 0.8527321410862451,
+    "map@10": 0.31189847566272993
+  },
+  "total_params": 24622784,
+  "embedding_stats": {
+    "mean": 0.00031444657361134887,
+    "std": 0.08838777244091034,
+    "l2_norm": 1.0
+  }
+}

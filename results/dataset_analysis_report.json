@@ -1,0 +1,22 @@
+{
+  "train": {
+    "total_samples": 53516,
+    "num_products": 10186,
+    "avg_samples_per_product": 5.253877871588455,
+    "single_sample_products": 0,
+    "single_sample_percentage": 0.0
+  },
+  "validation": {
+    "total_samples": 6035,
+    "num_products": 1132,
+    "avg_samples_per_product": 5.331272084805653,
+    "single_sample_products": 0,
+    "single_sample_percentage": 0.0,
+    "is_viable": true
+  },
+  "test": {
+    "total_samples": 60502,
+    "num_products": 11316,
+    "avg_samples_per_product": 5.346588900671615
+  }
+}
