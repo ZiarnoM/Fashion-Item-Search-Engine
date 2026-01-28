@@ -50,13 +50,13 @@ class StanfordSearchEngine:
         test_dataset = StanfordProductsDataset(
             root_dir=self.data_root,
             split='test',
-            transform=None  # We'll apply transform when extracting embeddings
+            transform=None
         )
 
         print(f"Test set size: {len(test_dataset)} images")
 
-        # Sample a subset if dataset is too large (for faster demo)
-        max_gallery_size = 5000  # Adjust based on your needs
+        # Sample a subset
+        max_gallery_size = 5000
         indices = list(range(len(test_dataset)))
 
         if len(test_dataset) > max_gallery_size:
@@ -140,13 +140,12 @@ print("=" * 60)
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 print(f"Using device: {device}")
 
-# Update these paths to your actual model and data locations
 MODEL_PATH = 'models/stanford_efficientnet_b0_best.pth'
 DATA_ROOT = './data/Stanford_Online_Products'
 
 # Check if model exists
 if not os.path.exists(MODEL_PATH):
-    print(f"⚠️  Model not found at {MODEL_PATH}")
+    print(f" Model not found at {MODEL_PATH}")
     print("Please update MODEL_PATH in the script to point to your trained model")
     print("Available checkpoints:")
     if os.path.exists('checkpoints'):
@@ -161,7 +160,7 @@ else:
 def search_interface(query_image, top_k):
     """Gradio interface function"""
     if search_engine is None:
-        return None, "❌ Search engine not initialized. Please check model path."
+        return None, " Search engine not initialized. Please check model path."
 
     if query_image is None:
         return None, "Please upload an image"
@@ -170,10 +169,8 @@ def search_interface(query_image, top_k):
     if isinstance(query_image, np.ndarray):
         query_image = Image.fromarray(query_image)
 
-    # Search
     results = search_engine.search(query_image, top_k=top_k)
 
-    # Prepare output
     output_images = []
     descriptions = []
 
@@ -189,7 +186,7 @@ def search_interface(query_image, top_k):
 def random_example():
     """Get random example from gallery"""
     if search_engine is None:
-        return None, "❌ Search engine not initialized"
+        return None, " Search engine not initialized"
 
     img, idx = search_engine.get_random_image()
     return img, "Random example from gallery"
@@ -199,7 +196,7 @@ def random_example():
 with gr.Blocks(title="Stanford Products Search Engine", theme=gr.themes.Soft()) as demo:
     gr.Markdown(
         """
-        # 🔍 Stanford Online Products Search Engine
+        # Stanford Online Products Search Engine
 
         Upload an image of a product and find visually similar items from the Stanford Online Products dataset.
 
@@ -215,7 +212,7 @@ with gr.Blocks(title="Stanford Products Search Engine", theme=gr.themes.Soft()) 
     if search_engine is None:
         gr.Markdown(
             """
-            ## ⚠️ Setup Required
+            ##  Setup Required
 
             Please update the following paths in `app_stanford.py`:
             - `MODEL_PATH`: Path to your trained model (e.g., 'checkpoints/stanford_efficientnet_b0_best.pth')
@@ -233,8 +230,8 @@ with gr.Blocks(title="Stanford Products Search Engine", theme=gr.themes.Soft()) 
                 step=1,
                 label="Number of Results"
             )
-            search_btn = gr.Button("🔍 Search", variant="primary", size="lg")
-            random_btn = gr.Button("🎲 Try Random Example", variant="secondary")
+            search_btn = gr.Button(" Search", variant="primary", size="lg")
+            random_btn = gr.Button(" Try Random Example", variant="secondary")
 
             gr.Markdown("### Tips:")
             gr.Markdown("- Upload clear product images")
@@ -278,7 +275,7 @@ with gr.Blocks(title="Stanford Products Search Engine", theme=gr.themes.Soft()) 
 # Launch
 if __name__ == "__main__":
     print("\n" + "=" * 60)
-    print("🚀 Starting Stanford Products Search Engine...")
+    print(" Starting Stanford Products Search Engine...")
     print("=" * 60 + "\n")
 
     if search_engine is not None:
@@ -288,5 +285,5 @@ if __name__ == "__main__":
             server_port=7860
         )
     else:
-        print("❌ Cannot launch: Search engine not initialized")
+        print(" Cannot launch: Search engine not initialized")
         print("Please check MODEL_PATH and DATA_ROOT in the script")

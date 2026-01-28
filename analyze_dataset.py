@@ -1,8 +1,3 @@
-"""
-Dataset Analysis Tool
-Checks class distribution in train/val/test splits to diagnose validation loss issues
-"""
-
 import numpy as np
 import matplotlib.pyplot as plt
 from collections import Counter
@@ -40,10 +35,10 @@ def analyze_split(dataset, split_name):
     
     # WARNING: Products with only 1 sample
     single_sample_products = sum(1 for count in samples_per_product if count == 1)
-    print(f"\n⚠️  Products with only 1 sample: {single_sample_products} ({single_sample_products/len(product_counts)*100:.1f}%)")
+    print(f"\n️  Products with only 1 sample: {single_sample_products} ({single_sample_products/len(product_counts)*100:.1f}%)")
     
     if single_sample_products > len(product_counts) * 0.3:
-        print("   ❌ PROBLEM: >30% of products have only 1 sample!")
+        print("    PROBLEM: >30% of products have only 1 sample!")
         print("   This makes metric learning impossible (no positive pairs)")
     
     # Products with 2 samples
@@ -147,21 +142,21 @@ def check_validation_viability(val_stats):
     print(f"\n--- DIAGNOSIS ---")
     
     if single_pct > 50:
-        print("❌ CRITICAL: >50% of products have only 1 sample")
+        print(" CRITICAL: >50% of products have only 1 sample")
         print("   Problem: No positive pairs → model can't learn similarities")
         print("   Solution: Change train/val split strategy")
         return False
     elif single_pct > 30:
-        print("⚠️  WARNING: 30-50% of products have only 1 sample")
+        print("️  WARNING: 30-50% of products have only 1 sample")
         print("   Problem: Limited positive pairs → high validation loss expected")
         print("   Note: This explains why val_loss >> train_loss")
         return True
     elif avg_samples < 2.0:
-        print("⚠️  WARNING: Average <2 samples per product")
+        print("  WARNING: Average <2 samples per product")
         print("   Problem: Very few positive pairs")
         return True
     else:
-        print("✅ GOOD: Validation set is viable for metric learning")
+        print(" GOOD: Validation set is viable for metric learning")
         print(f"   Most products have multiple samples ({avg_samples:.1f} avg)")
         return True
 

@@ -1,8 +1,3 @@
-"""
-Create beautiful training visualization plots
-Run after training: python plot_training.py
-"""
-
 import json
 import matplotlib.pyplot as plt
 import seaborn as sns
@@ -365,7 +360,7 @@ if __name__ == '__main__':
             available_models.append(model)
     
     if not available_models:
-        print("❌ No training history found! Train models first.")
+        print("No training history found! Train models first.")
         exit(1)
     
     print(f"Found history for: {', '.join(available_models)}\n")
@@ -381,7 +376,7 @@ if __name__ == '__main__':
     print("\n3. Creating comparison table...")
     create_comparison_table()
     
-    print("\n✅ All plots created in results/ directory!")
+    print("\nAll plots created in results/ directory!")
     print("\nGenerated files:")
     print("  - results/training_dynamics.png")
     for model in available_models:

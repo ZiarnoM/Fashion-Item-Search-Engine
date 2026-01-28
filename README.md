@@ -49,10 +49,10 @@ For best model (EfficientNet-B0):
   - RandomResizedCrop, RandomHorizontalFlip, ColorJitter, RandomRotation
 
 ### Tools Requirements ✅
-- ✅ Git with README: This file
+- ✅ Git with README
 - ✅ **REST API or GUI (Gradio)**:
 
-## 🚀 Quick Start
+##  Quick Start
 
 ### 1. Installation
 
@@ -141,7 +141,7 @@ Output Embedding (128-dim)
 - Backbone: ~4M parameters
 - Embedding Head: ~0.7M parameters
 
-## 🎓 Training Details
+##  Training Details
 
 ### Loss Function
 **Triplet Loss** with semi-hard negative mining:
@@ -183,7 +183,7 @@ Training transforms:
 | ResNet18 | 40.27% | 70.06% | 81.44% | 47.95% | 11.5M |
 | ResNet50 | 12.40% | 42.93% | 63.62% | 23.32% | 24.6M |
 
-**Winner**: EfficientNet-B0 achieves the best performance with the fewest parameters! 🏆
+**Winner**: EfficientNet-B0 achieves the best performance with the fewest parameters! 
 
 ### Why EfficientNet-B0 is Best
 1. **Better accuracy**: 60% vs 40% (ResNet18) or 12% (ResNet50)
@@ -211,7 +211,7 @@ See `results/` directory for detailed training curves showing:
    - Sort by similarity scores (descending)
    - Return top-K most similar items
 
-## 📝 Usage Examples
+##  Usage Examples
 
 ### Command Line (Training)
 ```bash
