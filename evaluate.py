@@ -60,7 +60,7 @@ def compute_similarity(query_emb, gallery_embs):
 def recall_at_k_fast(query_embs, query_labels, gallery_embs, gallery_labels, k_values=[1, 5, 10, 20],
                      exclude_same=False, query_ids=None, gallery_ids=None, chunk_size=1000):
     """
-    OPTIMIZED: Vectorized Recall@K computation
+    Vectorized Recall@K computation
     
     Args:
         chunk_size: Process queries in chunks to manage memory
@@ -81,7 +81,7 @@ def recall_at_k_fast(query_embs, query_labels, gallery_embs, gallery_labels, k_v
         query_chunk = query_embs[chunk_start:chunk_end]
         label_chunk = query_labels[chunk_start:chunk_end]
         
-        # VECTORIZED: Compute all similarities at once (chunk_size x num_gallery)
+        # Compute all similarities at once (chunk_size x num_gallery)
         similarities = query_chunk @ gallery_embs.T  # Matrix multiplication
         
         # Handle exclude_same if needed
@@ -123,7 +123,7 @@ def recall_at_k_fast(query_embs, query_labels, gallery_embs, gallery_labels, k_v
 
 
 def precision_at_k_fast(query_embs, query_labels, gallery_embs, gallery_labels, k=5, chunk_size=1000):
-    """OPTIMIZED: Vectorized Precision@K computation"""
+    """ Vectorized Precision@K computation"""
     all_precisions = []
     
     num_queries = len(query_embs)
@@ -149,7 +149,7 @@ def precision_at_k_fast(query_embs, query_labels, gallery_embs, gallery_labels, 
 
 
 def mean_average_precision_fast(query_embs, query_labels, gallery_embs, gallery_labels, k=10, chunk_size=1000):
-    """OPTIMIZED: Vectorized Mean Average Precision@K"""
+    """ Vectorized Mean Average Precision@K"""
     all_aps = []
     
     num_queries = len(query_embs)
@@ -190,7 +190,7 @@ def mean_average_precision_fast(query_embs, query_labels, gallery_embs, gallery_
 def mean_average_precision_exclude_same_fast(query_embs, query_labels, query_ids,
                                               gallery_embs, gallery_labels, gallery_ids, 
                                               k=10, chunk_size=1000):
-    """OPTIMIZED: Vectorized MAP@K excluding same product matches"""
+    """ Vectorized MAP@K excluding same product matches"""
     all_aps = []
     
     num_queries = len(query_embs)

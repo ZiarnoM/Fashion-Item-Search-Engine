@@ -104,9 +104,9 @@ def train_and_evaluate(config):
                     f"Evaluating {backbone}"
                 )
             else:
-                print(f"✗ Model file not found: {model_path}")
+                print(f" Model file not found: {model_path}")
         else:
-            print(f"✗ Skipping evaluation for {backbone} due to training failure")
+            print(f" Skipping evaluation for {backbone} due to training failure")
         
         model_duration = time.time() - model_start
         
@@ -155,9 +155,9 @@ def train_and_evaluate(config):
         model_path = f"checkpoints/{config['dataset']}_{backbone}_best.pth"
         if os.path.exists(model_path):
             size_mb = os.path.getsize(model_path) / (1024*1024)
-            print(f"  ✓ {model_path} ({size_mb:.1f} MB)")
+            print(f"   {model_path} ({size_mb:.1f} MB)")
         else:
-            print(f"  ✗ {model_path} (not found)")
+            print(f"   {model_path} (not found)")
     
     print("\nResults saved in:")
     print(f"  - ./results/")

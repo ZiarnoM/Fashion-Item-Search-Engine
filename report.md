@@ -61,13 +61,15 @@ The system uses **metric learning** with deep neural networks to:
 | **Test** | 60,502 | 11,316 | 12 | 5.3 |
 | **Total** | 120,053 | 22,634 | 12 | 5.3 |
 
-✅ **Dataset Requirements Met**:
-- ✅ At least 1,000 photos: **120,053 images**
-- ✅ Evaluation on 10,000+ photos: **60,502 test images**
-- ✅ Minimum 200×200px: Images resized to **224×224px**
+ **Dataset Requirements Met**:
+
+-  At least 1,000 photos: **120,053 images**
+-  Evaluation on 10,000+ photos: **60,502 test images**
+-  Minimum 200×200px: Images resized to **224×224px**
 
 ### Product Categories (12 classes)
 The dataset is divided into the following categories:
+
 - Bikes
 - Cabinets
 - Chairs
@@ -84,8 +86,9 @@ The dataset is divided into the following categories:
 ### Example Images
 
 ![Example images](results/report/example_images_all_category.png)
-
+![Bike examples](results/report/bicyble_examples.png)
 ### Data Distribution
+
 - **Balanced product representation**: Each product has ~5 images on average
 - **No single-sample products**: 0% in all splits, ensuring robust training
 - **Train/test split**: Disjoint product sets (no product overlap between train and test)
@@ -95,6 +98,8 @@ The dataset is divided into the following categories:
 
 
 ---
+
+ \newpage
 
 ## 3. Model Architecture
 
@@ -109,14 +114,14 @@ Input Image (224×224×3)
     ↓
 ResNet18 Backbone (Pre-trained on ImageNet)
     ├─ Conv layers with residual connections
-    └─ Global Average Pooling → 512 features
+    └─ Global Average Pooling -> 512 features
     ↓
 Embedding Head:
     ├─ Flatten
-    ├─ Linear(512 → 512)
+    ├─ Linear(512 -> 512)
     ├─ ReLU
     ├─ Dropout(0.2)
-    └─ Linear(512 → 128)
+    └─ Linear(512 -> 128)
     ↓
 L2 Normalization
     ↓
@@ -131,14 +136,14 @@ Input Image (224×224×3)
     ↓
 ResNet50 Backbone (Pre-trained on ImageNet)
     ├─ Deeper residual network (50 layers)
-    └─ Global Average Pooling → 2048 features
+    └─ Global Average Pooling -> 2048 features
     ↓
 Embedding Head:
     ├─ Flatten
-    ├─ Linear(2048 → 512)
+    ├─ Linear(2048 -> 512)
     ├─ ReLU
     ├─ Dropout(0.2)
-    └─ Linear(512 → 128)
+    └─ Linear(512 -> 128)
     ↓
 L2 Normalization
     ↓
@@ -147,21 +152,21 @@ Output Embedding (128-dim unit vector)
 
 **Parameters**: 24,624,124  
 
-#### Model 3: EfficientNet-B0 (Best Model) ⭐
+#### Model 3: EfficientNet-B0 (Best Model) 
 ```
 Input Image (224×224×3)
     ↓
 EfficientNet-B0 Backbone (Pre-trained on ImageNet)
     ├─ Compound-scaled mobile architecture
     ├─ Inverted residual blocks with squeeze-excitation
-    └─ Global Average Pooling → 1280 features
+    └─ Global Average Pooling -> 1280 features
     ↓
 Embedding Head:
     ├─ Flatten
-    ├─ Linear(1280 → 512)
+    ├─ Linear(1280 -> 512)
     ├─ ReLU
     ├─ Dropout(0.2)
-    └─ Linear(512 → 128)
+    └─ Linear(512 -> 128)
     ↓
 L2 Normalization
     ↓
@@ -169,7 +174,7 @@ Output Embedding (128-dim unit vector)
 ```
 
 **Parameters**: 4,729,084  
-**Winner**: ✅ Best accuracy with fewest parameters
+**Winner**:  Best accuracy with fewest parameters
 
 ### Architecture Diagram
 
@@ -192,10 +197,10 @@ Output Embedding (128-dim unit vector)
                             ▼
                 ┌───────────────────────┐
                 │   Embedding Head      │
-                │   Linear(N → 512)     │
+                │   Linear(N -> 512)    │
                 │   ReLU                │
                 │   Dropout(0.2)        │
-                │   Linear(512 → 128)   │
+                │   Linear(512 -> 128)  │
                 └───────────┬───────────┘
                             │
                             ▼
@@ -219,9 +224,10 @@ Output Embedding (128-dim unit vector)
 | **EfficientNet-B0** | **4.7M** | **~18 MB** | **Variable** |
 
 ### Transfer Learning Justification
+
 - **Pre-training**: All backbones pre-trained on ImageNet (1000-class classification)
 - **Fine-tuning**: Adapted for metric learning (similarity/retrieval task)
-- **Different problem**: Classification → Metric Learning (qualifies for +1 point)
+- **Different problem**: Classification -> Metric Learning (qualifies for +1 point)
 
 ### Metric Learning as Non-Trivial Solution
 My implementation uses **triplet loss with semi-hard negative mining**, which is a form of metric learning. This qualifies as a non-trivial solution because:
@@ -258,23 +264,34 @@ where:
    - If no semi-hard negative exists, use hard negative (closest negative)
 
 #### Why This Loss Function?
+
 - **Metric learning**: Directly optimizes for similarity-based retrieval
 - **Triplet mining**: Focuses on informative examples during training
 - **Margin-based**: Enforces minimum separation between similar/dissimilar pairs
 - **Proven effectiveness**: State-of-the-art for image retrieval tasks
 
-### Hyperparameters
+[//]: # (### Hyperparameters)
 
-| Parameter | Value | Justification |
-|-----------|-------|---------------|
-| **Learning Rate** | 0.0001 | Balanced convergence speed with stability for fine-tuning pre-trained models |
-| **Batch Size** | 64 | Maximum size fitting in GPU memory while maintaining diverse triplets |
-| **Epochs** | 10 | Validation loss plateaued after 8-10 epochs |
-| **Embedding Size** | 128 | Balance between expressiveness and computational efficiency |
-| **Margin** | 0.5 | Standard value for triplet loss, provides good separation |
-| **Weight Decay** | 1e-5 | Regularization to prevent overfitting |
-| **Optimizer** | Adam | Adaptive learning rates, works well for fine-tuning |
-| **LR Scheduler** | ReduceLROnPlateau | Reduce LR by 0.5× when val loss plateaus for 3 epochs |
+[//]: # ()
+[//]: # (| Parameter | Value | Justification |)
+
+[//]: # (|-----------|-------|---------------|)
+
+[//]: # (| **Learning Rate** | 0.0001 | Balanced convergence speed with stability for fine-tuning pre-trained models |)
+
+[//]: # (| **Batch Size** | 64 | Maximum size fitting in GPU memory while maintaining diverse triplets |)
+
+[//]: # (| **Epochs** | 10 | Validation loss plateaued after 8-10 epochs |)
+
+[//]: # (| **Embedding Size** | 128 | Balance between expressiveness and computational efficiency |)
+
+[//]: # (| **Margin** | 0.5 | Standard value for triplet loss, provides good separation |)
+
+[//]: # (| **Weight Decay** | 1e-5 | Regularization to prevent overfitting |)
+
+[//]: # (| **Optimizer** | Adam | Adaptive learning rates, works well for fine-tuning |)
+
+[//]: # (| **LR Scheduler** | ReduceLROnPlateau | Reduce LR by 0.5× when val loss plateaus for 3 epochs |)
 
 ### Data Augmentation (+1 point)
 
@@ -379,7 +396,7 @@ I tracked the following metrics during training:
 ### Training Curves
 
 ![Training Curves](results/stanford_efficientnet_b0_training_curves.png)
-
+![Training comparison](results/report/model_trainig_comparison.png)
 **Figure**: Training and validation loss curves for EfficientNet-B0, showing convergence after 10. 
 
 
@@ -455,6 +472,7 @@ ResNet50 performed worse despite having more parameters. Possible reasons:
 ### Embedding Space Analysis
 
 **EfficientNet-B0 Embeddings**:
+
 - Dimension: 128
 - Mean: 0.0017 (well-centered around zero)
 - Std: 0.0884 (good spread)
@@ -472,9 +490,9 @@ ResNet50 performed worse despite having more parameters. Possible reasons:
 
 ### Required Tools
 
-✅ **Git with README**: Repository includes comprehensive README.md  
-✅ **Gradio Web Interface (+1 point)**: Interactive demo at `app_stanford.py`  
-✅ **TensorBoard (+1 point)**: Training visualization via TensorBoard at Vast.ai
+ **Git with README**: Repository includes comprehensive README.md  
+ **Gradio Web Interface (+1 point)**: Interactive demo at `app_stanford.py`  
+ **TensorBoard (+1 point)**: Training visualization via TensorBoard at Vast.ai
 
 ### Libraries Used
 
@@ -503,29 +521,6 @@ tqdm==4.66.1
 ```
 
 Full requirements in `requirements.txt`.
-
-### Project Structure
-
-```
-project/
-├── train.py                          # Training script
-├── train_multiple.py                 # Multi-model training orchestration
-├── evaluate.py                       # Evaluation script
-├── app_stanford.py                   # Gradio web interface
-├── stanford_products_loader.py       # Custom dataset loader
-├── README.md                         # Documentation
-├── requirements.txt                  # Dependencies
-├── data/
-│   └── Stanford_Online_Products/     # Dataset
-├── checkpoints/                      # Saved models
-│   ├── stanford_efficientnet_b0_best.pth
-│   ├── stanford_resnet18_best.pth
-│   └── stanford_resnet50_best.pth
-└── results/                          # Training curves, metrics
-    ├── stanford_efficientnet_b0_history.json
-    ├── stanford_efficientnet_b0_metrics.json
-    └── stanford_efficientnet_b0_training_curves.png
-```
 
 ### MLOps Tools
 
@@ -627,18 +622,18 @@ pip install -r requirements.txt
 
 ### Completed Requirements
 
-| Category | Requirement | Points | Status |
-|----------|-------------|--------|--------|
-| **Problem** | Search Engine | 2 | ✅ |
-| **Model - Base** | Transfer Learning (ImageNet→Metric Learning) | 1 | ✅ |
-| **Model - Additional** | 2 additional architectures (ResNet18, ResNet50) | +2 | ✅ |
-| **Model - Non-trivial** | Metric Learning (Triplet Loss + Mining) | +1 | ⚠️ |
-| **Dataset** | Evaluation on 10,000+ photos | +1 | ✅ |
-| **Training** | Data Augmentation | +1 | ✅ |
-| **Training** | Adaptive Hyperparameters (ReduceLROnPlateau) | +1 | ✅ |
-| **Training** | Architecture Tuning (3 architectures) | +1 | ✅ |
-| **Tools** | Gradio Web Interface | +1 | ✅ |
-| **Tools** | TensorBoard | +1 | ✅ |
+| Category | Requirement                                     | Points |
+|----------|-------------------------------------------------|--------|
+| **Problem** | Search Engine                                   | 2 |
+| **Model - Base** | Transfer Learning (ImageNet->Metric Learning)   | 1 |
+| **Model - Additional** | 2 additional architectures (ResNet18, ResNet50) | +2 |
+| **Model - Non-trivial** | Metric Learning (Triplet Loss + Mining)         | +1 |
+| **Dataset** | Evaluation on 10,000+ photos                    | +1 |
+| **Training** | Data Augmentation                               | +1 |
+| **Training** | Adaptive Hyperparameters (ReduceLROnPlateau)    | +1 |
+| **Training** | Architecture Tuning (3 architectures)           | +1 |
+| **Tools** | Gradio Web Interface                            | +1 |
+| **Tools** | TensorBoard                                     | +1 |
 
 ### Points Breakdown
 
@@ -646,8 +641,8 @@ pip install -r requirements.txt
 |----------|-------------|-------------------|-------|
 | **Problem** | 2 | - | 2 |
 | **Model** | 1 | +2 (architectures) + 1 (metric learning) | 3-4 |
-| **Dataset** | Required ✅ | +1 | +1 |
-| **Training** | Required ✅ | +3 | +3 |
-| **Tools** | Required ✅ | +2 | +2 |
-| **Report** | Required ✅ | - | 0 |
+| **Dataset** | Required  | +1 | +1 |
+| **Training** | Required  | +3 | +3 |
+| **Tools** | Required  | +2 | +2 |
+| **Report** | Required  | - | 0 |
 | **TOTAL** | - | - | **11-12** |
